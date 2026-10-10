@@ -1,0 +1,30 @@
+# Runtime data written by the hooks: your prompts, file paths and session data.
+events.jsonl
+*.jsonl
+.library-runner/
+
+# Local config and anything credential-shaped
+.env
+.env.*
+!.env.example
+*.env
+secrets*
+*.pem
+*.key
+
+# State, caches, logs
+state/
+state.json
+*.state
+cache/
+logs/
+*.log
+
+# Build output and dependencies
+*.vsix
+node_modules/
+
+# OS and editor
+.DS_Store
+Thumbs.db
+desktop.ini

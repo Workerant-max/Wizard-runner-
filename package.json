@@ -1,0 +1,87 @@
+{
+  "name": "library-runner",
+  "displayName": "Library Runner",
+  "description": "A pixel-art wizard runs to a grand reading room, tinkers with your prompt and runs back with the answer. An AI overlay for VS Code chat, Copilot and Claude Code.",
+  "version": "0.2.0",
+  "publisher": "library-runner",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": { "color": "#241f38", "theme": "dark" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["AI", "Chat", "Other"],
+  "keywords": ["ai", "copilot", "claude", "chat", "pixel art", "wizard"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": true },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        { "id": "libraryRunner", "title": "Library Runner", "icon": "media/hat.svg" }
+      ]
+    },
+    "views": {
+      "libraryRunner": [
+        { "type": "webview", "id": "libraryRunner.view", "name": "Library Runner" }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "library-runner.wizard",
+        "name": "wizard",
+        "fullName": "The Wizard",
+        "description": "Send the wizard to the library with your question",
+        "isSticky": true
+      }
+    ],
+    "commands": [
+      { "command": "libraryRunner.ask", "title": "Ask the Wizard", "category": "Library Runner", "icon": "$(comment-discussion)" },
+      { "command": "libraryRunner.demo", "title": "Play Demo", "category": "Library Runner", "icon": "$(play)" },
+      { "command": "libraryRunner.changeSkin", "title": "Change Skin", "category": "Library Runner", "icon": "$(person)" },
+      { "command": "libraryRunner.cancel", "title": "Call the Wizard Back (Cancel)", "category": "Library Runner", "icon": "$(debug-stop)" },
+      { "command": "libraryRunner.connectClaudeCode", "title": "Connect Claude Code", "category": "Library Runner" },
+      { "command": "libraryRunner.disconnectClaudeCode", "title": "Disconnect Claude Code", "category": "Library Runner" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "libraryRunner.demo", "when": "view == libraryRunner.view", "group": "navigation@1" },
+        { "command": "libraryRunner.changeSkin", "when": "view == libraryRunner.view", "group": "navigation@2" },
+        { "command": "libraryRunner.cancel", "when": "view == libraryRunner.view", "group": "navigation@3" }
+      ]
+    },
+    "configuration": {
+      "title": "Library Runner",
+      "properties": {
+        "libraryRunner.skin": {
+          "type": "string",
+          "enum": ["wiz", "lib", "bot", "cat"],
+          "enumDescriptions": ["Old wizard with a big beard", "Librarian", "Robot", "Cat"],
+          "default": "wiz",
+          "description": "Which character runs to the library."
+        },
+        "libraryRunner.reduceMotion": {
+          "type": "boolean",
+          "default": false,
+          "description": "Turn off decorative animation (flying books, dust, bobbing). He still runs."
+        },
+        "libraryRunner.revealOnPrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Library Runner panel when a prompt starts (without stealing focus)."
+        },
+        "libraryRunner.claudeCode.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Animate Claude Code activity. Requires running 'Library Runner: Connect Claude Code' once."
+        },
+        "libraryRunner.modelFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Language model family for the panel prompt box, e.g. 'gpt-4o' or 'claude-sonnet-4'. Leave empty for the first available Copilot model."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,1573 @@
+// Library Runner webview v2: the reading room, the wizard, and the familiars he summons.
+(function () {
+'use strict';
+const vscode = acquireVsCodeApi();
+const $ = id => document.getElementById(id);
+const stage = $('stage'), say = $('say'), ans = $('ans'), ask = $('ask');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const TAU = Math.PI * 2, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+const STEPS = ['Hear', 'Gather books', 'Ponder', 'Write', 'Summon', 'Present'];
+$('pills').innerHTML = STEPS.map((s, i) => `<span class="pill"><b>${i + 1}</b>${s}</span>`).join('');
+const setStep = n => document.querySelectorAll('.pill').forEach((p, i) => { p.className = 'pill' + (i < n ? ' done' : i == n ? ' on' : ''); });
+
+/* ================= pixel engine ================= */
+const W = 320, H = 164, LV = [160, 123, 90], X_DESK = 42, X_LIB = 237, X_CAST = 153, CX = 160, CY = 129, FY = 158;
+const mk = (w, h, smooth) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.imageSmoothingEnabled = !!smooth; return [c, x]; };
+const cv = $('cv'); let vctx = cv.getContext('2d');
+// Q: the frame is drawn at Q times the room's logical resolution. Everything is placed in logical units (the
+// contexts carry a Q transform), and the sprites, rings and room details are drawn on the finer grid.
+const Q = 2;
+const [frameC, f] = mk(W * Q, H * Q), [statC, g] = mk(W * Q, H * Q), [beamC, bm] = mk(W * Q, H * Q), [vigC, vg] = mk(W, H), [tmpC, tc] = mk(28 * Q, 34 * Q);
+f.setTransform(Q, 0, 0, Q, 0, 0); g.setTransform(Q, 0, 0, Q, 0, 0);
+// glow: bright things are drawn twice, once into emC; emC is shrunk and laid back over the frame additively
+const [emC, em] = mk(W, H), [b2C, b2] = mk(W / 2, H / 2, true), [b4C, b4] = mk(W / 4, H / 4, true), [b8C, b8] = mk(W / 8, Math.ceil(H / 8), true);
+const [pilC, pc] = mk(26 * Q, H * Q);
+const R = (c, x, y, w, h, col) => { c.fillStyle = col; c.fillRect(x, y, w, h); };
+let EMIT = false;
+const L = (x, y, w, h, col) => { f.fillStyle = col; f.fillRect(x, y, w, h); if (EMIT) { em.fillStyle = col; em.fillRect(x, y, w, h); } };
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const BC = ['#6b3a1e','#8a5a2b','#b8925a','#d9c7a0','#7a1f1f','#a0332b','#2f4a5a','#4a5a3a','#e8dcc0','#3b2a1a','#c9a66b','#5a3a4a','#35495e','#7d5a32'];
+const INK = '#1b1714';
+const books = [], shelfRows = [], ledgeRows = [];
+
+function ell(c, cx, cy, rx, ry, col) { for (let dy = -ry; dy <= ry; dy++) { const w = Math.round(rx * Math.sqrt(1 - (dy / ry) ** 2)); if (w > 0) R(c, cx - w, cy + dy, 2 * w, 1, col); } }
+function curve(c, x0, y0, cx, cy, x1, y1, col) { for (let i = 0; i <= 40; i++) { const t = i / 40, u = 1 - t; R(c, Math.round(u * u * x0 + 2 * u * t * cx + t * t * x1), Math.round(u * u * y0 + 2 * u * t * cy + t * t * y1), 1, 1, col); } }
+
+function buildStatic() {
+  const c = g;
+  /* glass dome */
+  R(c, 0, 0, W, 28, '#9db6c4');
+  for (let y = 0; y < 28; y++) { const i = Math.round(y * 6 / 27); R(c, 96 + i, y, 128 - 2 * i, 1, y < 9 ? '#f1f8fb' : y < 18 ? '#dcecf3' : '#c8dce6'); }
+  for (let k = 0; k <= 8; k++) for (let y = 0; y < 28; y++) R(c, Math.round(96 + k * 16 + (y / 27) * (6 - k * 1.5)), y, 1, 1, '#b3963e');
+  for (let x = 0; x < 96; x += 24) R(c, x, 0, 1, 28, '#b3963e');
+  for (let x = 248; x < W; x += 24) R(c, x, 0, 1, 28, '#b3963e');
+  R(c, 0, 13, W, 1, '#b3963e'); R(c, 0, 26, W, 2, '#d4bf6a'); R(c, 0, 28, W, 1, '#8f7a36');
+  /* gothic band */
+  R(c, 0, 29, W, 20, '#b89c46');
+  const ins = [11, 8, 6, 5, 4, 3, 2, 2, 1, 1, 1];
+  for (let i = 0; i < 8; i++) {
+    const px = i * 40 + 4;
+    for (let yy = 0; yy < 19; yy++) { const n = yy < ins.length ? ins[yy] : 0; R(c, px + n, 30 + yy, 30 - 2 * n, 1, '#dcc97c'); }
+    for (let yy = 0; yy < 18; yy++) { const n = yy < ins.length ? ins[yy] : 0; R(c, px + n + 1, 31 + yy, 28 - 2 * n, 1, '#7a6528'); }
+    R(c, px + 14, 36, 2, 13, '#b89c46'); R(c, px + 6, 42, 18, 1, '#b89c46');
+    R(c, px + 32, 29, 6, 20, '#cdb660'); R(c, px + 32, 29, 1, 20, '#e8d690'); R(c, px + 34, 33, 2, 2, '#8a1f1f'); R(c, px + 34, 40, 2, 2, '#8a1f1f');
+  }
+  R(c, 0, 49, W, 4, '#ecdfae'); for (let x = 1; x < W; x += 4) R(c, x, 50, 2, 2, '#8a7530'); R(c, 0, 53, W, 1, '#8f7a36');
+
+  /* three tiers of shelves */
+  const ledges = [];
+  function shelves(x0, x1, y0, rows, rh) {
+    for (let r = 0; r < rows; r++) {
+      const base = y0 + (r + 1) * rh - 1; let x = x0;
+      while (x < x1) {
+        const w = rnd() < .55 ? 2 : (rnd() < .5 ? 1 : 3);
+        if (rnd() < .06) { x += w + 1; continue; }
+        if (x + w > x1) break;
+        const h = rh - 3 - Math.floor(rnd() * 3), col = BC[Math.floor(rnd() * BC.length)], by = base - h;
+        R(c, x, by, w, h, col);
+        const q = rnd();
+        if (q < .2 && h > 4) { R(c, x, by + 1, w, 1, '#d8b45a'); R(c, x, by + h - 2, w, 1, '#d8b45a'); }
+        else if (q < .28 && w >= 2) R(c, x, by + 2, w, 2, '#efe2bc');
+        if (w >= 2 && rnd() < .4) R(c, x, by, 1, h, 'rgba(255,255,255,.13)');
+        if (w >= 2) books.push({ x, y: by, w, h, c: col });
+        x += w + (rnd() < .15 ? 1 : 0);
+      }
+      R(c, x0 - 1, base, x1 - x0 + 2, 1, '#7a5530'); shelfRows.push([x0 - 1, x1 + 1, base]);
+    }
+  }
+  function drawDoor(y0, y1) {
+    const cx = 160, hw = 16, di = [9, 6, 4, 3, 2, 1, 1];
+    for (let y = y0 + 1; y < y1; y++) {
+      const yy = y - y0 - 1, n = yy < di.length ? di[yy] : 0; R(c, cx - hw + n, y, 2 * (hw - n), 1, '#d6c270');
+      if (yy > 0) { const m = (yy - 1) < di.length ? di[yy - 1] : 0; R(c, cx - hw + m + 2, y, 2 * (hw - m) - 4, 1, '#7d4c25'); }
+    }
+    R(c, cx, y0 + 4, 1, y1 - y0 - 4, '#4a2a13');
+    R(c, cx - 11, y0 + 10, 8, y1 - y0 - 13, '#6a3f1e'); R(c, cx + 3, y0 + 10, 8, y1 - y0 - 13, '#6a3f1e');
+    R(c, cx - 11, y0 + 10, 8, 1, '#8f5a2c'); R(c, cx + 3, y0 + 10, 8, 1, '#8f5a2c');
+    R(c, cx - 2, y0 + 17, 1, 2, '#f0c85a'); R(c, cx + 2, y0 + 17, 1, 2, '#f0c85a');
+  }
+  function tier(y0, y1, rows, door) {
+    R(c, 0, y0, W, y1 - y0, '#22160d');
+    const rh = Math.floor((y1 - y0) / rows);
+    for (let b = 0; b < 5; b++) {
+      const bx = b * 64;
+      if (door && b === 2) { shelves(bx + 3, 143, y0, rows, rh); shelves(178, bx + 61, y0, rows, rh); drawDoor(y0, y1); }
+      else shelves(bx + 3, bx + 61, y0, rows, rh);
+    }
+    for (let b = 0; b <= 5; b++) { R(c, b * 64 - 1, y0, 3, y1 - y0, '#6e4a2a'); R(c, b * 64 - 1, y0, 1, y1 - y0, '#a67948'); }
+    R(c, 0, y0, W, 2, 'rgba(0,0,0,.4)');
+    if (y1 < 150) {
+      R(c, 0, y1 - 7, W, 1, '#c9a24a');
+      for (let x = 1; x < W; x += 3) R(c, x, y1 - 6, 1, 6, '#131a17');
+      for (let x = 0; x <= W; x += 32) { R(c, x - 1, y1 - 8, 2, 8, '#131a17'); R(c, x - 1, y1 - 9, 2, 1, '#e6c460'); }
+      R(c, 0, y1, W, 2, '#ecdfa8'); R(c, 0, y1 + 2, W, 1, '#4d3a1a'); ledges.push(y1);
+    }
+  }
+  tier(54, 90, 4, false); tier(93, 123, 3, true); tier(126, 153, 3, false); ledgeRows.push(...ledges);
+  ledges.forEach(y => { for (let x = 8; x < W; x += 46) { R(c, x, y + 2, 24, 1, '#fff4c2'); R(c, x - 3, y + 3, 30, 1, 'rgba(255,236,160,.3)'); R(c, x - 5, y + 4, 34, 1, 'rgba(255,236,160,.14)'); } });
+
+  /* carpet */
+  R(c, 0, 153, W, 11, '#3a4560');
+  R(c, 0, 153, W, 1, 'rgba(0,0,0,.45)');
+  /* fine lozenges on the fine grid, with a border stripe; drawn before the table so it sits on top */
+  c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = 'rgba(120,136,190,.5)';
+  for (let y = 156 * Q; y < H * Q; y++) for (let x = 0; x < W * Q; x++) { const u = (x + (Math.floor(y / 6) % 2) * 6) % 12, v = y % 6; if (Math.abs(u - 6) + Math.abs(v - 3) === 3) c.fillRect(x, y, 1, 1); }
+  c.fillStyle = '#2c3550'; c.fillRect(0, 153 * Q + 2, W * Q, 1); c.fillStyle = '#8a7a4a'; c.fillRect(0, 153 * Q + 5, W * Q, 1);
+  c.restore();
+
+  /* round table under the brass lamp */
+  for (let y = 146; y < 164; y++) for (let x = 34; x < 140; x++) { const dx = (x - 86) / 54, dy = (y - 155) / 9; if (dx * dx + dy * dy < 1 && ((x + y) & 1)) R(c, x, y, 1, 1, 'rgba(255,234,168,.2)'); }
+  ell(c, 86, 157, 46, 4, '#6e3e14'); ell(c, 86, 154, 46, 4, '#cd8f48'); R(c, 58, 151, 44, 1, '#e8b873'); R(c, 52, 152, 24, 1, '#e0a860');
+  R(c, 78, 147, 4, 3, '#b8763a'); R(c, 82, 148, 1, 1, '#b8763a'); R(c, 78, 147, 4, 1, '#5a2e10');
+  R(c, 104, 140, 12, 8, '#1f2a36'); R(c, 105, 141, 10, 6, '#cfe0ee'); R(c, 106, 142, 5, 1, '#8fb4d8'); R(c, 106, 144, 7, 1, '#8fb4d8'); R(c, 103, 148, 14, 1, '#8a949c');
+  /* reader seen from behind, blue jacket on the chair */
+  R(c, 112, 134, 4, 2, INK); R(c, 111, 136, 7, 1, INK); R(c, 110, 137, 9, 5, INK); R(c, 111, 142, 7, 1, INK);
+  R(c, 107, 143, 15, 12, INK); R(c, 108, 142, 13, 1, INK);
+  R(c, 105, 147, 19, 9, '#3f6fb5'); R(c, 105, 147, 19, 1, '#6f9ad8'); R(c, 105, 147, 1, 9, '#5d88c8'); R(c, 114, 148, 1, 7, '#2f5a98');
+  /* lamp */
+  R(c, 86, 110, 2, 44, '#b8862f'); R(c, 86, 110, 1, 44, '#e6c36a'); R(c, 85, 107, 4, 3, '#c9a13f'); R(c, 86, 106, 2, 1, '#e6c36a');
+  [[58, 128], [116, 128], [68, 136], [106, 136]].forEach(([sx, sy]) => {
+    curve(c, 87, 113, (87 + sx) / 2, 96, sx, sy - 3, '#c9a13f');
+    R(c, sx - 2, sy - 3, 5, 1, '#f9f2d8'); R(c, sx - 3, sy - 2, 7, 1, '#f9f2d8'); R(c, sx - 4, sy - 1, 9, 1, '#e6dcb8');
+    R(c, sx - 3, sy, 7, 1, '#fff6c8');
+    for (let k = 1; k < 5; k++) for (let x = sx - 3 - k; x <= sx + 3 + k; x++) if ((x + sy + k) & 1) R(c, x, sy + k, 1, 1, `rgba(255,240,180,${.3 - k * .06})`);
+  });
+
+  /* light shafts (dithered) */
+  // drawn on the fine grid, so the dither is half the size of a room pixel
+  [[112, 134, 190, 226], [152, 170, 252, 286]].forEach(([a0, a1, b0, b1]) => {
+    for (let y = 29 * Q; y < 153 * Q; y++) {
+      const t = (y / Q - 29) / 124, xa = Math.round((a0 + (b0 - a0) * t) * Q), xb = Math.round((a1 + (b1 - a1) * t) * Q);
+      for (let x = xa; x <= xb; x++) if (((x + y) & 1) === 0) R(bm, x, y, 1, 1, `rgba(255,246,204,${(.24 * (1 - t * .7)).toFixed(3)})`);
+    }
+  });
+  /* stepped vignette */
+  for (let i = 0; i < 7; i++) { const a = 'rgba(18,10,2,.09)'; R(vg, 0, i * 2, W, 2, a); R(vg, 0, H - 2 - i * 2, W, 2, a); R(vg, i * 3, 0, 3, H, a); R(vg, W - 3 - i * 3, 0, 3, H, a); }
+}
+/* the room again, on the fine grid: spine edges, gilt bands, wood grain, glass glints, a finer carpet */
+function refineStatic() {
+  const c = g; c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+  const r = (x, y, w, h, col) => { c.fillStyle = col; c.fillRect(x, y, w, h); };
+  /* glass: a thin glint in every other pane, and a lit edge on the leading */
+  for (let k = 0; k < 8; k++) { const x = (96 + k * 16) * Q + 6; if (k % 2 === 0) for (let i = 0; i < 9; i++) r(x + i, 4 + i, 1, 1, 'rgba(255,255,255,.75)'); }
+  for (let x = 0; x < 96 * Q; x += 48) { r(x + 12, 6, 1, 8, 'rgba(255,255,255,.35)'); r(x + 13, 6, 1, 4, 'rgba(255,255,255,.35)'); }
+  r(0, 26 * Q, W * Q, 1, '#f0e2a0');
+  /* gothic band: a lit inner edge on each arch and a fine bead along the cornice */
+  for (let i = 0; i < 8; i++) { const px = (i * 40 + 4) * Q; r(px + 3, 60, 1, 36, 'rgba(255,240,190,.35)'); r(px + 30 * Q - 4, 60, 1, 36, 'rgba(0,0,0,.18)'); }
+  for (let x = 2; x < W * Q; x += 8) r(x + 1, 49 * Q + 1, 2, 1, '#fff4cc');
+  /* books: a shadowed right edge, a lit top, and finer gilt bands and title labels on some */
+  let s2 = 97; const rn = () => (s2 = (s2 * 16807) % 2147483647) / 2147483647;
+  books.forEach(b => {
+    const x = b.x * Q, y = b.y * Q, w = b.w * Q, h = b.h * Q;
+    r(x + w - 1, y, 1, h, 'rgba(0,0,0,.3)'); r(x, y, w - 1, 1, 'rgba(255,255,255,.2)');
+    const q = rn();
+    if (q < .3 && h > 8) { r(x, y + 3, w - 1, 1, '#e8c060'); r(x, y + 5, w - 1, 1, '#e8c060'); r(x, y + h - 4, w - 1, 1, '#e8c060'); }
+    else if (q < .5 && h > 10) { r(x + 1, y + 5, w - 2, 4, '#efe2bc'); r(x + 1, y + 6, w - 3, 1, 'rgba(60,40,20,.55)'); }
+    else if (q < .62) r(x + 1, y + Math.floor(h / 2), w - 2, 1, 'rgba(255,230,160,.45)');
+  });
+  /* shelf planks: a lit lip and a dark underside */
+  shelfRows.forEach(([x0, x1, y]) => { r(x0 * Q, y * Q, (x1 - x0) * Q, 1, '#a57a48'); r(x0 * Q, y * Q + 2, (x1 - x0) * Q, 1, 'rgba(0,0,0,.35)'); });
+  /* uprights: a lit edge and a little grain */
+  [[54, 90], [93, 123], [126, 153]].forEach(([y0, y1]) => { for (let b = 0; b <= 5; b++) { const x = (b * 64 - 1) * Q; r(x + 3, y0 * Q, 1, (y1 - y0) * Q, '#c8965a'); for (let y = y0 * Q + 5; y < y1 * Q; y += 11) r(x + 4, y, 1, 3, '#5a3a1e'); } });
+  /* gallery rails: a bright top line and a lit side on every baluster */
+  ledgeRows.forEach(y1 => { r(0, (y1 - 7) * Q, W * Q, 1, '#f3dc8e'); for (let x = 1; x < W; x += 3) r(x * Q + 2, (y1 - 6) * Q, 1, 11, 'rgba(230,196,96,.35)'); r(0, y1 * Q, W * Q, 1, '#fff6cc'); });
+  /* round table: a thin polished rim and grain */
+  for (let x = 44 * Q; x < 128 * Q; x += 7) r(x, 154 * Q + (x % 3), 4, 1, 'rgba(120,60,20,.35)');
+  r(58 * Q, 151 * Q, 44 * Q, 1, '#fff0c8');
+  c.restore();
+}
+buildStatic();
+refineStatic();
+
+/* the light pillar is pre-drawn once: a dithered column, white core to violet edge */
+(function buildPillar() {
+  for (let y = 0; y < H * Q; y++) for (let x = 0; x < 26 * Q; x++) {
+    const d = Math.abs(x + .5 - 13 * Q) / Q; let col = null;
+    if (d < 1) col = '#ffffff';
+    else if (d < 2.5) col = 'rgba(214,248,255,.95)';
+    else if (d < 4.5) col = ((x + y) & 1) ? 'rgba(170,225,255,.8)' : 'rgba(150,170,255,.62)';
+    else if (d < 7.5) col = ((x + y) & 1) ? 'rgba(150,120,255,.5)' : null;
+    else if (d < 11) col = ((x + y) % 4 === 0) ? 'rgba(130,100,255,.32)' : null;
+    if (col) R(pc, x, y, 1, 1, col);
+  }
+})();
+
+/* ---------- 3x5 pixel font, runes and hypothesis glyphs ---------- */
+const FONT = {};
+("A .#.#.#####.##.# B ##.#.###.#.###. C .###..#..#...## D ##.#.##.##.###. E ####..##.#..### F ####..##.#..#.. G .###..#.##.#.## H #.##.#####.##.# I ###.#..#..#.### J ..#..#..##.#.#. K #.##.###.#.##.# L #..#..#..#..### M #.########.##.# N ##.#.##.##.##.# O .#.#.##.##.#.#. P ##.#.###.#..#.. Q .#.#.##.###..## R ##.#.###.#.##.# S .###...#...###. T ###.#..#..#..#. U #.##.##.##.#### V #.##.##.##.#.#. W #.##.########.# X #.##.#.#.#.##.# Y #.##.#.#..#..#. Z ###..#.#.#..### 0 ####.##.##.#### 1 .#.##..#..#.### 2 ##...#.#.#..### 3 ##...#.#...###. 4 #.##.####..#..# 5 ####..##...###. 6 .###..####.#### 7 ###..#.#..#..#. 8 ####.#####.#### 9 ####.####..###. . .............#. , ..........#.#.. ! .#..#..#.....#. ? ##...#.#.....#. - ......###...... ' .#..#.......... : ....#.....#.... / ..#..#.#.#..#.. + ....#.###.#.... = ...###...###... & .#.#.#.#.#.#.## ( .#.#..#..#...#. ) .#...#..#..#.#. > #...#...#.#.#.. < ..#.#.#...#...# _ ............### # #.#####.#####.# % #.#..#.#.#..#.# ~ ............#.# Σ ####...#.#..### λ #...#..#.#.##.# √ ..#..##.##.#.#. Δ .#..#.#.##.#### π ####.##.##.##.# ∴ ....#....#.#... { .##.#.#...#..## } ##..#...#.#.##.")
+  .split(' ').reduce((a, v, i, arr) => { if (i % 2 === 0) FONT[v] = arr[i + 1]; return a; }, 0);
+FONT[' '] = '...............';
+const RUNES = ['#.###.#..#..#..', '##.#.###.#.##.#', '#..##.#.###.#..', '.#.#.#.#..#..#.', '#.##.#.#.#.##.#', '#.#.#.#.#.#.#.#',
+  '.#.##..##.#..#.', '#..#.#####.#..#', '###.#..#..#.###', '..#.###.###.#..', '#.####.#..#..#.', '.#.#.##.#.#.#.#'];
+const HYP = ['?', '=', '+', '>', 'X', 'Σ', 'λ', '√', 'Δ', 'π', '%', '∴', '?', '!'];
+function glyph(c, pat, x, y, col, emit) {
+  c.fillStyle = col; if (emit) em.fillStyle = col;
+  for (let i = 0; i < 15; i++) if (pat[i] === '#') { const px = x + i % 3, py = y + (i / 3 | 0); c.fillRect(px, py, 1, 1); if (emit) em.fillRect(px, py, 1, 1); }
+}
+function text(c, s, x, y, col) { for (const ch of String(s)) { glyph(c, FONT[ch] || FONT['?'], x, y, col, false); x += 4; } }
+function wrap(label, max, lines) {
+  const words = String(label || '').toUpperCase().replace(/[^A-Z0-9 .,!?'\-:/+=&()#%]/g, ' ').replace(/\s+/g, ' ').trim().split(' ');
+  const out = []; let cur = '';
+  for (let w of words) {
+    if (w.length > max) w = w.slice(0, max - 1) + '~';
+    if (!cur) cur = w; else if ((cur + ' ' + w).length <= max) cur += ' ' + w; else { out.push(cur); cur = w; }
+  }
+  if (cur) out.push(cur);
+  if (out.length > lines) { out.length = lines; out[lines - 1] = out[lines - 1].slice(0, max - 1) + '~'; }
+  return out.length ? out : ['HELPER'];
+}
+
+/* ---------- sprites ---------- */
+const E = '................';
+const HEADS = {
+  wiz: ['..........kk....', '.........kgGk...', '........kggGk...', '........kgGk....', '.......kggGk....', '.......kgggGk...', '......kggggGk...', '......kgggggGk..', '.....kbbbybbbk..', '..kkgggggggggkk.', '...kGGGGGGGGGk..', '....kwwsswwsk...', '....kwwssesnnk..', '....kwwsssssnk..', '....kwwwwwwwwk..'],
+  lib: [E, E, E, E, E, E, '......kkkk......', '.....khhhhk.....', '....khhhhhhk....', '....khhhhhhhk...', '....khhssssk....', '....khsesesk....', '....khsssssnk...', '....kksssmsk....', '....kyyyyyyyk...'],
+  bot: [E, E, E, E, E, '........x.......', '........k.......', '.....kkkkkkk....', '....kmmmmmmmk...', '....kmMMMMMMk...', '....kmoommook...', '....kmoommook...', '....kmmmmmmmk...', '....kmkmkmkmk...', '.....kkkkkkk....'],
+  cat: [E, E, E, E, E, '....kk....kk....', '....kpk..kpk....', '....kcckkcck....', '...kcccccccck...', '...kcccccccck...', '...kcceccceck...', '...kcccccpcck...', '...kcwcccccwck..', '....kcccccck....', '.....kkkkkk.....']
+};
+const BODY = ['...kRwwwwwwwwk..', '...kRrwwwwWwwk..', '..kRrrwwwwwwrk..', '..kRrrwWwwwwrk..', '..kRrrrwwwWrrk..', '..kRryywwwyyrk..', '..kRrrrrwwrrrk..', '..kRRrrrrwrrrk..', '.kRRrrrrrrrrrrk.', '.kRRRrrrrrrrrrk.', '.kkkkkkkkkkkkkk.'];
+const FEET = { idle: '....ff....ff....', ra: '..ff.......ff...', rb: '.....ff..ff.....', ca: '...ff...........', cb: '..........ff....' };
+const PAL0 = { k: '#1a1420', s: '#f0c09a', n: '#d98e6c', e: '#1a1420', f: '#2a2226', w: '#f4f1ea', W: '#c9c4b8', y: '#d8c07a' };
+const SKP = {
+  wiz: { g: '#8e8e98', G: '#5f5f6b', b: '#2e2a33', r: '#9a9aa4', R: '#686874' },
+  lib: { h: '#5f3d2a', y: '#ef9f27', m: '#8a4b2f', r: '#7f77dd', R: '#5a52b8' },
+  bot: { m: '#b4b2a9', M: '#8c8a82', o: '#ffb347', x: '#e24b4a', r: '#6e6d68', R: '#4a4945' },
+  cat: { c: '#ef9f27', p: '#e889a8', r: '#1d9e75', R: '#127058' }
+};
+const GEAR = [['..o..', '.ooo.', 'oo.oo', '.ooo.', '..o..'], ['o...o', '.ooo.', '.o.o.', '.ooo.', 'o...o']];
+/* a familiar: hooded elf-sprite, glowing eyes, wisp tail */
+const FAMS = ['.....o.....', '....oCo....', '...oCcco...', '..oCcccco..', 'ssodddddoss', '.sodEdEdos.', '..ocdddco..', '.oCcccccco.', '.oCccyccco.', '..oCcccco..', '...occco...', '....oco....', '.....o.....'];
+const FPAL = [
+  { c: '#2fb8c0', C: '#b4fff8', g: '120,255,240' }, { c: '#c0509e', C: '#ffc0ee', g: '255,140,230' },
+  { c: '#58a848', C: '#d4ffa8', g: '170,255,140' }, { c: '#cf8a2a', C: '#ffe0a0', g: '255,210,120' },
+  { c: '#7458dc', C: '#d8ccff', g: '190,170,255' }, { c: '#c44848', C: '#ffbab0', g: '255,150,140' }];
+/* where familiars go to work: the top gallery first, then the middle one */
+const SLOTS = [{ x: 140, y: 90 }, { x: 76, y: 90 }, { x: 204, y: 90 }, { x: 40, y: 123 }, { x: 108, y: 123 }, { x: 292, y: 123 }, { x: 272, y: 90 }, { x: 14, y: 90 }];
+
+/* ---------- world state ---------- */
+const Wz = { x: X_DESK, y: LV[0], face: 1, anim: 'idle', skin: 'wiz', carry: null, pile: 0, pose: '', tinker: false, trip: false, glow: false, hopStart: 0, hopUntil: 0, waveUntil: 0 };
+const S = { ladder: 0, lit: 0, watch: 0, stack: 0, scrolls: 0, pulled: -1, dim: 0 };
+// spell: floor/ring/pillar are draw-in progress 0..1; floorB is how brightly the floor circle burns
+const SP = { floor: 0, floorB: 1, ring: 0, pillar: 0, charge: 0, flare: 0, flash: 0, rot: 0 };
+let calm = matchMedia('(prefers-reduced-motion: reduce)').matches, calmSetting = false;
+const parts = [], P = [], GL = [], FM = [], SW = [], FLY = [], WP = [];
+const motes = Array.from({ length: 16 }, () => ({ x: 130 + rnd() * 150, y: 40 + rnd() * 110, p: rnd() * 6 }));
+const view = { w: W, h: H }, cam = { x: 0, y: 0 };
+let lastEv = performance.now(), casting = false, nextGlyph = 0, lastT = performance.now();
+const dozing = now => now - lastEv > 60000 && Wz.anim === 'idle' && !casting && !Wz.glow;
+
+/* ---------- open books whose pages turn ---------- */
+// Every reader (the wizard, each familiar, each wisp) carries a book: which spread it is on and the turn in
+// progress. A turn lifts the right-hand page at the spine, curls it over and lays it on the left.
+const newBook = () => ({ pageNo: 0, turnT0: 0, nextTurn: 0 });
+const WB = newBook();
+const hsh = (a, b, c) => { let h = (a * 374761393 + b * 668265263 + c * 1274126177) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return (h ^ (h >>> 16)) >>> 0; };
+function bookTurn(bk, now, per, dur) {
+  if (calm) { bk.turnT0 = 0; return -1; }
+  if (!bk.nextTurn) bk.nextTurn = now + per * (.2 + rnd() * .8);
+  if (bk.turnT0 && now - bk.turnT0 >= dur) { bk.pageNo++; bk.turnT0 = 0; bk.nextTurn = now + per * (.75 + rnd() * .5); }
+  if (!bk.turnT0 && now >= bk.nextTurn) bk.turnT0 = now;
+  return bk.turnT0 ? (now - bk.turnT0) / dur : -1;
+}
+// px(x, y, colour) plots one fine pixel. cx is the spine column, top the pages' top row, hw a page's width, ph its rows.
+function openBook(px, cx, top, hw, ph, bk, now, o) {
+  const u = bookTurn(bk, now, o.per || 1600, o.dur || 560), hot = !!o.hot;
+  const paper = hot ? '#ffffff' : o.paper || '#fbf3da', gut = hot ? '#ece6ff' : '#e6d6ae', ink = hot ? (o.hotInk || '#8f86ff') : o.ink || '#7a6a58';
+  const L = cx - hw, Rt = cx + hw;
+  /* covers round the pages, and the block of page edges below them */
+  for (let y = top; y < top + ph; y++) { px(L - 1, y, o.cov); px(Rt + 1, y, o.cov); }
+  for (let x = L - 1; x <= Rt + 1; x++) { px(x, top + ph, x === cx ? o.covD : x === L - 1 || x === Rt + 1 ? o.cov : '#d9c79c'); px(x, top + ph + 1, o.cov); px(x, top + ph + 2, o.covD); }
+  /* the two pages: bowed into the gutter, the spine a dark crease */
+  for (let x = L; x <= Rt; x++) for (let y = top; y < top + ph; y++) {
+    const d = Math.abs(x - cx);
+    px(x, y, d === 0 ? '#8a6a3a' : y === top && d === 1 ? '#c4a676' : d === 1 ? gut : paper);
+  }
+  /* lines of text; the left page keeps the old spread until the turning page lands, the right shows the next one */
+  const pgL = bk.pageNo * 2, pgR = (bk.pageNo + (u >= 0 ? 1 : 0)) * 2 + 1, rows = [];
+  for (let y = top + 1; y < top + ph - (ph > 3 ? 1 : 0); y += 2) rows.push(y);
+  const textRow = (s, y, li, pg, col, skip) => {
+    const h = hsh(li, pg, 7), wl = 3 + h % 3, end = hw - 1 - (li === rows.length - 1 && rows.length > 1 ? 1 + (h >> 4) % 3 : 0);
+    for (let d = 2; d <= end; d++) if ((d + (h >> 7)) % wl && !(skip && skip(d))) px(cx + s * d, y, col);
+  };
+  rows.forEach((y, li) => { textRow(-1, y, li, pgL, ink); textRow(1, y, li, pgR, ink); });
+  if (u < 0) return;
+  /* the turning page: its leading edge curls ahead of the spine side, its underside is shaded */
+  const e = easeIO(Math.min(1, u)), th = Math.PI * e, bend = .85 * Math.sin(Math.PI * Math.min(1, u)), k = o.k || .75;
+  const reach = Math.cos(th) * hw;
+  for (let d = 1; d <= Math.round(Math.abs(reach) * .9); d++) for (let y = top + 1; y < top + ph; y++) px(cx + (reach < 0 ? -d : d), y, 'rgba(70,45,20,.18)');
+  for (let r = .5; r <= hw + .01; r += .25) {
+    const tr = Math.min(Math.PI, th + bend * Math.pow(r / hw, 1.5)), c = Math.cos(tr);
+    const x = Math.round(cx + r * c), lift = Math.round(r * Math.sin(tr) * k), outer = r > hw - .6;
+    const face = c > .14 ? 1 : c < -.14 ? -1 : 0;
+    for (let j = 0; j < ph; j++) {
+      let col;
+      if (outer) col = face >= 0 ? '#c2ab7e' : '#a08860';
+      else if (face === 0) col = '#cbb88e';
+      else if (face > 0) col = hot ? '#ffffff' : (rows.includes(top + j) && (Math.round(r) + j) % 4 ? '#cbbd9e' : '#fffaf0');
+      else col = j === 0 || r < hw * .35 ? '#c9b58a' : rows.includes(top + j) && (Math.round(r) + j) % 3 ? '#c3ae84' : '#dccaa0';
+      px(x, top + j - lift, col);
+    }
+    px(x, top - lift - 1, face < 0 ? 'rgba(70,45,20,.6)' : 'rgba(90,64,30,.45)');
+  }
+}
+
+/* ---------- the wizard on the fine grid: 32 x 54, facing right ---------- */
+const WPAL = {
+  k: '#1a1420', h: '#b9b9c5', g: '#8e8e98', G: '#6c6c78', D: '#4e4e5a', b: '#2e2a33', y: '#f2d67a', Y: '#b8952e',
+  s: '#f0c09a', S: '#c99070', n: '#d98e6c', p: '#e7a08c', e: '#1a1420', w: '#f4f1ea', W: '#c9c4b8', v: '#a39e94',
+  r: '#9a9aa4', R: '#6a6a76', q: '#b3b3bd', Q: '#50505c', t: '#d8c07a', T: '#a8893e', f: '#2a2226', F: '#4d3e3a'
+};
+const WIZ_ART = (function () {
+  const w = 32, h = 52, G = Array.from({ length: h }, () => Array(w).fill('.'));
+  const put = (x, y, c) => { if (x >= 0 && x < w && y >= 0 && y < h) G[y][x] = c; };
+  const get = (x, y) => (x >= 0 && x < w && y >= 0 && y < h) ? G[y][x] : '.';
+  /* hat: a crooked cone, lit on the left, a crease, three stars */
+  [[21, 22], [20, 23], [20, 23], [19, 23], [19, 24], [18, 24], [17, 23], [17, 24], [16, 24], [16, 25], [15, 25], [14, 25], [14, 26], [13, 26], [12, 26], [11, 27]]
+    .forEach(([l, r], y) => { for (let x = l; x <= r; x++) put(x, y, x === l || x === r ? 'k' : x === l + 1 ? 'h' : x === r - 1 ? 'D' : x === r - 2 ? 'G' : 'g'); });
+  for (let y = 7; y < 16; y++) put(21 - Math.floor((y - 7) / 3), y, 'G');
+  [[19, 9], [18, 10], [19, 10], [20, 10], [19, 11], [21, 4], [15, 13], [24, 13]].forEach(([x, y], i) => put(x, y, i === 2 ? 'y' : i < 5 ? 'Y' : 'y'));
+  put(19, 10, 'y'); put(19, 9, 'y'); put(19, 11, 'y');
+  /* band with a gold buckle */
+  for (let y = 16; y < 18; y++) for (let x = 10; x <= 27; x++) put(x, y, x === 10 || x === 27 ? 'k' : 'b');
+  [[17, 16], [18, 16], [19, 16], [17, 17], [19, 17]].forEach(([x, y]) => put(x, y, 'y')); put(18, 17, 'Y');
+  /* brim */
+  for (let x = 5; x <= 30; x++) put(x, 18, x === 5 || x === 30 ? 'k' : 'h');
+  for (let x = 4; x <= 31; x++) { put(x, 19, x === 4 || x === 31 ? 'k' : 'g'); put(x, 20, x === 4 || x === 31 ? 'k' : 'G'); }
+  for (let x = 6; x <= 29; x++) put(x, 21, 'k');
+  /* face, brows, beard */
+  ['........kwwwwSSSSSSSSSSSSk......',
+   '........kwwwwwsssswwwwwssk......',
+   '........kwwwwnssssseesssnk......',
+   '........kwwwwnsssssspsssnnk.....',
+   '........kwwwwwssssssssswnnk.....',
+   '........kWwwwwwWsssswwwwwwk.....',
+   '........kWwwwwwwwwwwwwwwwWk.....'].forEach((row, i) => [...row].forEach((ch, x) => { if (ch !== '.') put(x, 22 + i, ch); }));
+  /* robe: widens to the hem, shadowed at the back, two folds, a belt, gilt hem */
+  for (let y = 29; y <= 51; y++) {
+    const t = (y - 29) / 22, l = Math.round(9 - 6 * t), r = Math.round(25 + 3 * t);
+    for (let x = l; x <= r; x++) {
+      let ch = x === l || x === r ? 'k' : x <= l + 2 ? 'R' : 'r';
+      if (y > 33 && x === Math.round(12 - 4 * t)) ch = 'R';
+      if (y > 36 && x === Math.round(12 - 4 * t) + 1) ch = 'q';
+      if (y > 38 && x === Math.round(22 + 3 * t)) ch = 'R';
+      if (y === 40) ch = x === l || x === r ? 'k' : 'T';
+      if (y === 41) ch = x === l || x === r ? 'k' : 't';
+      if (y === 47) ch = x === l || x === r ? 'k' : (x % 3 === 0 ? 'y' : 't');
+      if (y === 48) ch = x === l || x === r ? 'k' : 'T';
+      if (y === 50) ch = x === l || x === r ? 'k' : 'Q';
+      if (y === 51) ch = 'k';
+      put(x, y, ch);
+    }
+  }
+  /* the beard falls over the robe to a point, with strands */
+  for (let y = 29; y <= 46; y++) {
+    const bw = 8 * (1 - Math.pow((y - 29) / 17.5, 1.5)), l = Math.round(17 - bw), r = Math.round(17 + bw) - 1;
+    for (let x = l; x <= r; x++) put(x, y, x === l || x === r ? 'W' : ((x * 3 + y) % 7 === 0 ? 'W' : x > 19 && (x + y) % 3 === 0 ? 'v' : 'w'));
+    if (bw > 1.5) { put(l - 1, y, 'k'); put(r + 1, y, 'k'); }
+  }
+  /* a lit front edge down the robe */
+  for (let y = 42; y <= 49; y++) { const r = Math.round(25 + 3 * (y - 29) / 22); if (y !== 47 && y !== 48) put(r - 1, y, 'q'); }
+  /* the back arm, a fold of sleeve at his side */
+  for (let y = 31; y <= 38; y++) { put(8 - Math.floor((y - 31) / 3), y, 'k'); put(9 - Math.floor((y - 31) / 3), y, 'Q'); }
+  return G.map(r => r.join(''));
+})();
+
+function drawWizHi(c, X0, Y0, face, now) {
+  const set = (col, row, color) => { c.fillStyle = color; c.fillRect(X0 + (face > 0 ? col : 31 - col), Y0 + row, 1, 1); };
+  const put = (col, row, ch) => set(col, row, WPAL[ch]);
+  const block = (x0, y0, rows, pal) => rows.forEach((row, b) => [...row].forEach((ch, a) => { if (ch !== '.') set(x0 + a, y0 + b, pal[ch]); }));
+  const pose = Wz.anim === 'idle' ? Wz.pose : '', cast = pose === 'cast';
+  const tink = Wz.tinker && Wz.anim === 'idle' && !Wz.trip && !pose;
+  const lift = (cast ? -5 : tink ? (Math.floor(now / 160) % 2 ? -2 : 0) : Wz.anim === 'climb' ? -2 : 0) * 2;
+  const pulse = calm ? 1 : (Math.sin(now / 140) > 0 ? 1 : 0);
+  const halo = (hc, hr, rad, col, inner) => {
+    for (let dy = -rad - 1; dy <= rad + 1; dy++) for (let dx = -rad - 1; dx <= rad + 1; dx++) {
+      const d = Math.abs(dx) + Math.abs(dy);
+      if (d <= rad && d >= rad - 1 && ((dx + dy) & 1) === 0) set(hc + dx, hr + dy, col); else if (d < rad - 1) set(hc + dx, hr + dy, inner);
+    }
+  };
+  if (cast) halo(31, 3 + lift, 10 + 2 * pulse, 'rgba(200,240,255,.85)', 'rgba(225,245,255,.3)');
+  else if (Wz.glow) halo(31, 3 + lift, 8 + 2 * pulse, 'rgba(255,226,120,.75)', 'rgba(255,240,170,.22)');
+  else if (tink) halo(31, 3 + lift, 5, 'rgba(170,220,255,.5)', 'rgba(190,230,255,.16)');
+  /* body */
+  for (let r = 0; r < WIZ_ART.length; r++) { const line = WIZ_ART[r]; for (let i = 0; i < 32; i++) { const ch = line[i]; if (ch !== '.') put(i, r, ch); } }
+  /* boots */
+  let feet = FEET.idle;
+  if (Wz.anim === 'run') feet = Math.floor(now / 110) % 2 ? FEET.ra : FEET.rb;
+  else if (Wz.anim === 'climb') feet = Math.floor(now / 220) % 2 ? FEET.ca : FEET.cb;
+  for (let i = 0; i < 16; i++) if (feet[i] === 'f') { const lead = feet[i + 1] !== 'f'; put(i * 2, 52, 'f'); put(i * 2 + 1, 52, lead ? 'F' : 'f'); put(i * 2, 53, 'k'); put(i * 2 + 1, 53, 'k'); }
+  /* staff: grained shaft, two knots, a gilt collar, prongs cradling a faceted crystal */
+  const bot = cast ? 53 + lift : 53;
+  for (let r = 7 + lift; r <= bot; r++) { const knot = (r - lift) % 14 === 0; set(30, r, knot ? '#3f2510' : '#8d5d31'); set(31, r, knot ? '#3f2510' : r % 4 === 0 ? '#4f3018' : '#65401f'); }
+  set(30, 8 + lift, '#e6c460'); set(31, 8 + lift, '#a8893e'); set(30, 9 + lift, '#d8b050'); set(31, 9 + lift, '#8a6a2a');
+  [[28, 3], [28, 4], [28, 5], [29, 6], [29, 7], [33, 3], [33, 4], [33, 5], [32, 6], [32, 7]].forEach(([a, b]) => set(a, b + lift, a < 30 ? '#8d5d31' : '#5a371b'));
+  let cl, cm, cd;
+  if (cast) { const fl = calm || Math.floor(now / 70) % 2; cl = '#ffffff'; cm = fl ? '#e6fbff' : '#b4f4ff'; cd = '#6fc8e8'; }
+  else if (Wz.glow) { cl = '#fff6c0'; cm = '#ffe066'; cd = '#d0a030'; }
+  else { cl = '#dff2ff'; cm = tink && Math.floor(now / 90) % 2 ? '#e8f7ff' : '#9fd3f5'; cd = '#5a96c8'; }
+  [[30, 0, cl], [31, 0, cm], [29, 1, cl], [30, 1, '#ffffff'], [31, 1, cm], [32, 1, cd], [28, 2, cl], [29, 2, cl], [30, 2, cm], [31, 2, cm], [32, 2, cd], [33, 2, cd],
+   [28, 3, cm], [29, 3, cm], [30, 3, cm], [31, 3, cd], [32, 3, cd], [33, 3, '#3a6a9a'], [29, 4, cm], [30, 4, cd], [31, 4, cd], [32, 4, '#3a6a9a'], [30, 5, cd], [31, 5, '#3a6a9a']]
+    .forEach(([a, b, col]) => set(a, b + lift, col));
+  /* the staff arm: a bell sleeve from the shoulder to the fist, gilt at the cuff; it follows the hand up */
+  const hr = 34 + lift;
+  sleeve(23, 31, 27, hr + 2);
+  block(28, hr, ['.ksk.', 'kssSk', 'ksSSk', 'kSSk.', '.kk..'], WPAL);
+  if (tink && !calm && Math.random() < .7) set(31 + Math.round(Math.random() * 12 - 6), 3 + lift + Math.round(Math.random() * 12 - 6), ['#ffffff', '#ffe38a', '#bfe6ff'][Math.floor(Math.random() * 3)]);
+  /* what he holds */
+  function sleeve(ax, ay, bx, by) {
+    const vx = bx - ax, vy = by - ay, len2 = vx * vx + vy * vy, pts = [];
+    for (let y = Math.min(ay, by) - 6; y <= Math.max(ay, by) + 6; y++) for (let x = Math.min(ax, bx) - 6; x <= Math.max(ax, bx) + 6; x++) {
+      const u = clamp(((x - ax) * vx + (y - ay) * vy) / len2, 0, 1), dx = x - (ax + vx * u), dy = y - (ay + vy * u), d = Math.hypot(dx, dy), rad = 1.6 + 1.3 * u;
+      const side = vx * dy - vy * dx; // which side of the arm the pixel is on: underneath is shadowed
+      if (d <= rad) pts.push([x, y, u > .78 ? (side > 0 ? 'T' : 't') : side > 0 && d > rad * .35 ? 'R' : side < 0 && d > rad * .55 ? 'q' : 'r']);
+      else if (d <= rad + 1 && u > .08) pts.push([x, y, 'k']);
+    }
+    pts.sort((a, b) => (a[2] === 'k' ? 0 : 1) - (b[2] === 'k' ? 0 : 1)).forEach(([x, y, ch]) => put(x, y, ch));
+  }
+  const K = WPAL.k;
+  if (Wz.carry === 'note') {
+    block(18, 34, ['kkkkkkk', 'kwwwwWk', 'kwvvvwk', 'kwwwwwk', 'kwvvwwk', 'kwwwwwk', 'kwvvvwk', 'kkkkkkk'], { k: K, w: '#fbfbf5', W: '#d8d4e8', v: '#7f77dd' });
+    block(24, 38, ['ss', 'SS'], WPAL);
+  }
+  if (Wz.carry === 'scroll') {
+    block(15, 35, ['.kkkkkkkkkk.', 'kbBppppppbBk', 'kbBplllppbBk', 'kbBpppRRpbBk', 'kbBplllRpbBk', 'kbBppppppbBk', '.kkkkkkkkkk.'],
+      { k: K, b: '#b8892b', B: '#7a5a18', p: '#f5e6b8', l: '#c9b27a', R: '#a0332b' });
+    block(26, 38, ['ss', 'SS'], WPAL);
+  }
+  if (Wz.carry === 'book') {
+    block(17, 34, ['kkkkkkkk', 'kSBBBBBk', 'kSBByBBp', 'kSByyyBp', 'kSBByBBp', 'kSBBBBBp', 'kSBBBBBk', 'kkkkkkkk'], { k: K, S: '#8a3018', B: '#d85a30', y: '#f2d67a', p: '#fbf3da' });
+    block(25, 38, ['ss', 'SS'], WPAL);
+  }
+  if (Wz.carry === 'pile') for (let i = 0; i < Wz.pile; i++) {
+    const yy = 40 - i * 4, xo = 16 + 2 * (i & 1), col = BC[(i * 5 + 3) % BC.length];
+    for (let a = 0; a < 12; a++) { set(xo + a, yy, a === 11 ? '#fbf3da' : col); set(xo + a, yy + 1, a === 11 ? '#e8dcc0' : col); set(xo + a, yy + 2, a === 11 ? '#fbf3da' : col); set(xo + a, yy + 3, K); }
+    set(xo, yy, 'rgba(255,255,255,.25)'); for (let a = 0; a < 11; a++) set(xo + a, yy, 'rgba(255,255,255,.18)');
+    set(xo + 4, yy, '#d8b45a'); set(xo + 4, yy + 1, '#d8b45a'); set(xo + 4, yy + 2, '#d8b45a'); set(xo + 6, yy + 1, '#d8b45a');
+    if (i === Wz.pile - 1) { put(xo + 12, 40, 's'); put(xo + 12, 41, 'S'); }
+  }
+  /* reading: a big open book whose pages he turns */
+  if (pose === 'read') {
+    openBook(set, 20, 34, 8, 6, WB, now, { cov: '#7a1f1f', covD: '#4a1410', per: 1250, dur: 640, k: .8 });
+    put(11, 40, 's'); put(12, 40, 's'); put(11, 41, 'S'); put(28, 40, 's'); put(29, 40, 's'); put(29, 41, 'S');
+  }
+  /* writing: an open book with lines of text and a quill */
+  if (pose === 'jot' || pose === 'write') {
+    const by = 38;
+    for (let a = 12; a <= 29; a++) { set(a, by - 1, '#4a1410'); set(a, by + 6, '#7a1f1f'); set(a, by + 7, K); }
+    for (let b = by - 1; b <= by + 6; b++) { set(12, b, '#7a1f1f'); set(29, b, '#7a1f1f'); }
+    for (let a = 13; a <= 28; a++) for (let b = by; b <= by + 5; b++) set(a, b, a === 20 ? '#8a6a3a' : a === 21 ? '#b89868' : (a === 19 || a === 22) ? '#efe3c4' : '#fbf3da');
+    set(14, by, '#4a1410'); set(27, by, '#4a1410'); // the pages curl up at the corners
+    [by + 1, by + 3].forEach(b => { for (let a = 14; a <= 18; a++) if ((a + b) % 4) set(a, b, '#8a7a68'); for (let a = 23; a <= 27; a++) if ((a + b) % 5) set(a, b, '#8a7a68'); });
+    {
+      const k = calm ? 2 : Math.floor(now / 140) % 6, nx = 22 + (k < 3 ? k : 5 - k) + (Math.floor(now / 840) % 2 ? 3 : 0);
+      for (let a = 23; a < Math.min(28, nx); a++) set(a, by + 2, '#3a2f5a');
+      set(nx, by + 2, '#1b1714'); set(nx + 1, by + 1, '#6a5a48');
+      [[2, 0], [2, -1], [3, -2], [3, -3], [4, -4], [4, -5], [5, -6], [5, -7], [6, -8]].forEach(([a, b], i) => { set(nx + a, by + b, i > 6 ? '#b9c6d6' : '#ffffff'); if (i > 1 && i < 8) set(nx + a - 1, by + b, '#dfe8f0'); if (i > 2 && i < 7) set(nx + a + 1, by + b + 1, '#c8d4e2'); });
+      put(nx + 2, by + 2, 's'); put(nx + 3, by + 2, 's'); put(nx + 2, by + 3, 'S'); put(nx + 3, by + 3, 'S');
+    }
+  }
+  /* tinkering: a small brass gear turning beside him */
+  if (tink) {
+    const rot = calm ? 0 : Math.floor(now / 120) * (Math.PI / 16), gx = -10, gy = 11;
+    for (let dy = -6; dy <= 6; dy++) for (let dx = -6; dx <= 6; dx++) {
+      const d = Math.hypot(dx, dy), a = Math.atan2(dy, dx) - rot, tooth = Math.cos(a * 8) > .35;
+      if (d <= 3.6 || (d <= 5.6 && tooth)) set(gx + dx, gy + dy, d < 1.6 ? K : d < 2.4 ? '#ffd27a' : dx + dy < 0 ? '#ffc24e' : '#d88a22');
+    }
+  }
+  /* looks up and waves */
+  if (now < Wz.waveUntil) {
+    const up = calm || Math.floor(now / 220) % 2;
+    block(up ? 3 : 1, 16, ['.kk.', 'kssk', 'kssk', 'kSSk', '.kk.'], WPAL);
+    for (let y = 21; y <= 29; y++) { const x = 4 + Math.floor((y - 21) / 3); put(x, y, 'k'); put(x + 1, y, 'q'); put(x + 2, y, 'r'); put(x + 3, y, 'R'); }
+    if (calm || Math.floor(now / 400) % 2) glyphQ(c, FONT['!'], X0 + (face > 0 ? 6 : 20), Y0 - 14, '#ffe38a', 2);
+  }
+  /* dozing when nothing has happened for a minute */
+  if (dozing(now) && !calm) {
+    const k = Math.floor(now / 700) % 3;
+    for (let j = 0; j <= k; j++) {
+      const n = 3 + j, zx = 26 + j * 6, zy = 6 - j * 8;
+      for (let a = 0; a < n; a++) { set(zx + a, zy, '#e8e2ff'); set(zx + a, zy + n - 1, '#e8e2ff'); set(zx + n - 1 - a, zy + a, '#e8e2ff'); }
+    }
+  }
+}
+
+/* X0, Y0 are fine-grid pixels on an untransformed context. The wizard has his own fine sprite; the other
+   skins keep their original art, each pixel drawn Q fine pixels square. */
+function drawWiz(c, X0, Y0, face, now) {
+  if (!(Wz.skin in HEADS) || Wz.skin === 'wiz') drawWizHi(c, X0, Y0, face, now); else drawWizLo(c, X0, Y0, face, now);
+}
+function glyphQ(c, pat, X, Y, col, sz) { c.fillStyle = col; for (let i = 0; i < 15; i++) if (pat[i] === '#') c.fillRect(X + (i % 3) * sz, Y + (i / 3 | 0) * sz, sz, sz); }
+function drawWizLo(c, X0, Y0, face, now) {
+  const sk = Wz.skin in HEADS ? Wz.skin : 'wiz', pal = Object.assign({}, PAL0, SKP[sk]), wiz = sk === 'wiz';
+  const set = (col, row, color) => { c.fillStyle = color; c.fillRect(X0 + (face > 0 ? col : 15 - col) * Q, Y0 + row * Q, Q, Q); };
+  let feet = FEET.idle;
+  if (Wz.anim === 'run') feet = Math.floor(now / 110) % 2 ? FEET.ra : FEET.rb;
+  else if (Wz.anim === 'climb') feet = Math.floor(now / 220) % 2 ? FEET.ca : FEET.cb;
+  const rows = HEADS[sk].concat(BODY, [feet]);
+  if (sk === 'cat') [[1, 15], [0, 16], [0, 17], [1, 18], [1, 19]].forEach(([a, b]) => set(a, b, pal.c));
+  for (let r = 0; r < rows.length; r++) {
+    const line = rows[r];
+    for (let i = 0; i < 16; i++) {
+      let ch = line[i]; if (!ch || ch === '.') continue;
+      if (r >= 15 && !wiz) { if (ch === 'w' || ch === 'W') ch = 'r'; if (ch === 'y') ch = 'R'; }
+      set(i, r, pal[ch] || '#f0f');
+    }
+  }
+  const pose = Wz.anim === 'idle' ? Wz.pose : '', cast = pose === 'cast';
+  const tink = Wz.tinker && Wz.anim === 'idle' && !Wz.trip && !pose;
+  const lift = cast ? -5 : tink ? (Math.floor(now / 160) % 2 ? -2 : 0) : Wz.anim === 'climb' ? -2 : 0;
+  const halo = (hc, hr, rad, col, inner) => {
+    for (let dy = -rad - 1; dy <= rad + 1; dy++) for (let dx = -rad - 1; dx <= rad + 1; dx++) {
+      const d = Math.abs(dx) + Math.abs(dy);
+      if (d <= rad && d >= rad - 1 && ((dx + dy) & 1) === 0) set(hc + dx, hr + dy, col); else if (d < rad - 1) set(hc + dx, hr + dy, inner);
+    }
+  };
+  const pulse = calm ? 1 : (Math.sin(now / 140) > 0 ? 1 : 0);
+  if (wiz) {
+    if (cast) halo(15, 1 + lift, 5 + pulse, 'rgba(200,240,255,.85)', 'rgba(225,245,255,.4)');
+    else if (Wz.glow) halo(15, 1 + lift, 4 + pulse, 'rgba(255,226,120,.75)', 'rgba(255,240,170,.28)');
+    else if (tink) halo(15, 1 + lift, 2, 'rgba(170,220,255,.5)', 'rgba(190,230,255,.2)');
+    const bot = cast ? 26 + lift : 26;
+    for (let r = 3 + lift; r <= bot; r++) set(15, r, r % 5 === 0 ? '#553519' : '#6b4423');
+    set(14, 3 + lift, '#6b4423'); set(16, 3 + lift, '#6b4423'); set(14, 2 + lift, '#6b4423'); set(16, 2 + lift, '#6b4423');
+    const oc = cast ? (calm || Math.floor(now / 70) % 2 ? '#ffffff' : '#b4f4ff') : Wz.glow ? '#ffe066' : tink && Math.floor(now / 90) % 2 ? '#e8f7ff' : '#9fd3f5';
+    [[15, 0], [14, 1], [16, 1], [15, 2]].forEach(([a, b]) => set(a, b + lift, oc)); set(15, 1 + lift, '#ffffff');
+    const hr = cast ? 17 + lift : 17;
+    set(14, hr + (cast ? 0 : lift), pal.s); set(15, hr + (cast ? 0 : lift), pal.s); set(14, hr + 1 + (cast ? 0 : lift), pal.s); set(15, hr + 1 + (cast ? 0 : lift), pal.s);
+    if (!cast) { set(16, 17 + lift, pal.k); set(16, 18 + lift, pal.k); }
+    if (cast) { set(13, hr + 1, pal.r); set(13, hr + 2, pal.r); set(12, hr + 3, pal.r); }
+    if (tink && !calm && Math.random() < .7) set(15 + Math.round(Math.random() * 6 - 3), 1 + lift + Math.round(Math.random() * 6 - 3), ['#ffffff', '#ffe38a', '#bfe6ff'][Math.floor(Math.random() * 3)]);
+  } else if (Wz.glow || cast) halo(8, sk === 'lib' ? 3 : 2, 4 + pulse, cast ? 'rgba(200,240,255,.85)' : 'rgba(255,226,120,.75)', 'rgba(255,240,170,.28)');
+  /* what he holds */
+  if (Wz.carry === 'note') { for (let a = 9; a < 12; a++) for (let b = 17; b < 21; b++) set(a, b, '#fbfbf5'); set(10, 18, '#7f77dd'); set(10, 19, '#aaaaaa'); set(12, 19, pal.s); }
+  if (Wz.carry === 'scroll') { for (let a = 8; a < 13; a++) for (let b = 18; b < 21; b++) set(a, b, a === 8 || a === 12 ? '#b8892b' : '#f5e6b8'); set(10, 19, '#b8892b'); set(13, 19, pal.s); }
+  if (Wz.carry === 'book') { for (let a = 9; a < 12; a++) for (let b = 17; b < 21; b++) set(a, b, a === 9 ? '#a8401f' : '#d85a30'); set(12, 19, pal.s); }
+  if (Wz.carry === 'pile') for (let i = 0; i < Wz.pile; i++) {
+    const yy = 20 - i * 2, col = BC[(i * 5 + 3) % BC.length];
+    for (let a = 8 + (i & 1); a < 14 + (i & 1); a++) { set(a, yy, col); set(a, yy + 1, col); }
+    set(10 + (i & 1), yy, '#d8b45a'); set(10 + (i & 1), yy + 1, '#d8b45a'); set(14 + (i & 1), 20, pal.s);
+  }
+  /* reading and writing: an open book, a quill when he writes */
+  if (pose === 'read' || pose === 'jot' || pose === 'write') {
+    const by = pose === 'read' ? 17 : 19;
+    for (let a = 6; a <= 14; a++) { set(a, by - 1, '#4a1410'); set(a, by + 3, '#7a1f1f'); }
+    for (let b = by - 1; b <= by + 3; b++) { set(6, b, '#7a1f1f'); set(14, b, '#7a1f1f'); }
+    for (let a = 7; a <= 13; a++) for (let b = by; b < by + 3; b++) set(a, b, a === 10 ? '#8a6a3a' : '#fbf3da');
+    [8, 9, 11, 12].forEach(a => { set(a, by, '#6a5a48'); if (a !== 9) set(a, by + 2, '#6a5a48'); });
+    if (pose === 'read') {
+      const ph = calm ? 1 : (now / 1300) % 1;
+      if (ph < .3) { const k = Math.floor(ph / .3 * 6); set(13 - k, by - 1 + (k > 1 && k < 5 ? -1 : 0), '#fffaf0'); set(13 - k, by, '#fffaf0'); }
+      set(13, by + 3, pal.s); set(7, by + 3, pal.s);
+    } else {
+      // the quill scratches along the right-hand page and the ink line grows behind it
+      const k = calm ? 2 : Math.floor(now / 140) % 6, nx = 8 + (k < 3 ? k : 5 - k) + (Math.floor(now / 840) % 2 ? 3 : 0);
+      for (let a = 8; a < Math.min(13, nx); a++) set(a, by + 1, '#3a2f5a');
+      set(nx, by, '#1b1714'); set(nx + 1, by - 1, '#ffffff'); set(nx + 2, by - 2, '#ffffff'); set(nx + 2, by - 3, '#dfe8f0'); set(nx + 3, by - 4, '#dfe8f0'); set(nx + 3, by - 5, '#b9c6d6');
+      set(nx + 1, by, pal.s);
+    }
+  }
+  if (tink) { const G = GEAR[calm ? 0 : Math.floor(now / 200) % 2]; for (let b = 0; b < 5; b++) for (let a = 0; a < 5; a++) if (G[b][a] === 'o') set(-7 + a, 3 + b, '#f0a93a'); }
+  /* looks up and waves */
+  if (now < Wz.waveUntil) {
+    const up = calm || Math.floor(now / 220) % 2;
+    set(up ? 1 : 0, 9, pal.s); set(up ? 1 : 0, 10, pal.s); set(1, 11, pal.r); set(1, 12, pal.r); set(2, 13, pal.r);
+    if (calm || Math.floor(now / 400) % 2) glyphQ(c, FONT['!'], X0 + (face > 0 ? 3 : 10) * Q, Y0 - 7 * Q, '#ffe38a', Q);
+  }
+  /* dozing when nothing has happened for a minute */
+  if (dozing(now) && !calm) {
+    const k = Math.floor(now / 700) % 3;
+    for (let j = 0; j <= k; j++) { const zx = 12 + j * 3, zy = 4 - j * 4; ['zzz', '..z', 'zzz'].forEach((row, b) => [...row].forEach((ch, a) => { if (ch === 'z') set(zx + a, zy + b, '#e8e2ff'); })); }
+  }
+}
+
+/* ---------- spell pieces ---------- */
+// rings and lines are traced on the fine grid (one fine pixel wide); the glow copy stays on the room grid
+function ringL(cx, cy, rx, ry, col, a0, a1) {
+  const n = Math.max(24, Math.ceil(Math.max(rx, ry) * 1.3 * Q * Math.abs(a1 - a0)));
+  f.fillStyle = col; em.fillStyle = col;
+  let px = 1e9, py = 1e9;
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + (a1 - a0) * i / n, x = Math.round((cx + Math.cos(a) * rx) * Q), y = Math.round((cy + Math.sin(a) * ry) * Q);
+    if (x === px && y === py) continue; px = x; py = y; f.fillRect(x / Q, y / Q, 1 / Q, 1 / Q); if (EMIT) em.fillRect(Math.floor(x / Q), Math.floor(y / Q), 1, 1);
+  }
+}
+function line(x0, y0, x1, y1, col) {
+  x0 = Math.round(x0 * Q); y0 = Math.round(y0 * Q); x1 = Math.round(x1 * Q); y1 = Math.round(y1 * Q);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let e = dx + dy;
+  f.fillStyle = col; em.fillStyle = col;
+  for (let n = 0; n < 800; n++) {
+    f.fillRect(x0 / Q, y0 / Q, 1 / Q, 1 / Q); if (EMIT) em.fillRect(Math.floor(x0 / Q), Math.floor(y0 / Q), 1, 1);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * e; if (e2 >= dy) { e += dy; x0 += sx; } if (e2 <= dx) { e += dx; y0 += sy; }
+  }
+}
+const prog = (k, a, b) => clamp((k - a) / (b - a), 0, 1);
+
+function drawFloor(now) {
+  if (SP.floor <= 0) return;
+  const k = SP.floor, b = SP.floorB, a0 = -Math.PI / 2, sw = TAU * prog(k, 0, .85), rot = SP.rot;
+  f.globalAlpha = b;
+  // faint violet pool inside the circle
+  for (let dy = -5; dy <= 5; dy++) { const w = Math.round(30 * Math.sqrt(1 - (dy / 5.5) ** 2) * prog(k, 0, .6)); if (w > 0) { R(f, CX - w, FY + dy, 2 * w, 1, `rgba(140,110,255,${(.16 * b).toFixed(3)})`); if (EMIT) R(em, CX - w, FY + dy, 2 * w, 1, `rgba(140,110,255,${(.3 * b).toFixed(3)})`); } }
+  ringL(CX, FY, 30, 5, '#d8ccff', a0, a0 + sw);
+  ringL(CX, FY, 22, 3.6, '#9f86ff', a0, a0 + sw * .98);
+  // pentagram laid flat on the floor
+  const pk = prog(k, .35, 1);
+  if (pk > 0) for (let i = 0; i < 5; i++) {
+    const t1 = rot * .5 + i * TAU / 5, t2 = rot * .5 + (i + 2) * TAU / 5;
+    const x1 = CX + Math.cos(t1) * 22, y1 = FY + Math.sin(t1) * 3.6, x2 = CX + Math.cos(t2) * 22, y2 = FY + Math.sin(t2) * 3.6;
+    line(x1, y1, x1 + (x2 - x1) * pk, y1 + (y2 - y1) * pk, '#8ff0ff');
+  }
+  // rune dashes circling between the rings
+  for (let i = 0; i < 12; i++) {
+    const t = -rot * .8 + i * TAU / 12; if (((t - a0) % TAU + TAU) % TAU > sw) continue;
+    L(Math.round(CX + Math.cos(t) * 26) - 1, Math.round(FY + Math.sin(t) * 4.3), 2, 1, i % 3 ? '#ffe38a' : '#ffffff');
+  }
+  f.globalAlpha = 1;
+}
+
+function drawMandala(now) {
+  const k = SP.ring; if (k <= 0) return;
+  const a0 = -Math.PI / 2, sw = TAU * prog(k, 0, .6), rot = SP.rot;
+  f.globalAlpha = clamp(k * 2, 0, 1);
+  for (let i = 0; i < 36; i++) { // outer ticks
+    const t = -rot * .6 + i * TAU / 36; if (((t - a0) % TAU + TAU) % TAU > sw) continue;
+    L(Math.round(CX + Math.cos(t) * 41), Math.round(CY + Math.sin(t) * 41), 1, 1, i % 6 ? '#8f7cff' : '#ffffff');
+  }
+  ringL(CX, CY, 37, 37, '#e2d8ff', a0, a0 + sw);
+  ringL(CX, CY, 30, 30, '#a58cff', a0 - Math.PI, a0 - Math.PI - sw);
+  const shown = prog(k, .15, .8) * 16;
+  for (let i = 0; i < 16; i++) { // runes ride the band between the two rings
+    if (i >= shown) break;
+    const t = rot + i * TAU / 16, x = Math.round(CX + Math.cos(t) * 33.5) - 1, y = Math.round(CY + Math.sin(t) * 33.5) - 2;
+    const hot = !calm && ((i + Math.floor(now / 120)) % 16) === 0;
+    glyph(f, RUNES[i % RUNES.length], x, y, hot ? '#ffffff' : '#ffe38a', EMIT);
+  }
+  const hk = prog(k, .35, .9);
+  if (hk > 0) for (let tri = 0; tri < 2; tri++) for (let i = 0; i < 3; i++) { // hexagram
+    const t1 = -rot * 1.4 + tri * Math.PI / 3 + i * TAU / 3, t2 = t1 + TAU / 3;
+    const x1 = CX + Math.cos(t1) * 22, y1 = CY + Math.sin(t1) * 22, x2 = CX + Math.cos(t2) * 22, y2 = CY + Math.sin(t2) * 22;
+    line(x1, y1, x1 + (x2 - x1) * hk, y1 + (y2 - y1) * hk, '#8ff0ff');
+    if (hk >= 1) ringL(Math.round(x1), Math.round(y1), 2, 2, '#ffffff', 0, TAU);
+  }
+  const ck = prog(k, .5, 1);
+  if (ck > 0) { ringL(CX, CY, 24, 24, 'rgba(160,140,255,.7)', 0, TAU * ck); ringL(CX, CY, 7 + (calm ? 0 : Math.round(Math.sin(now / 90) * SP.charge)), 7, '#ffffff', 0, TAU * ck); }
+  f.globalAlpha = 1;
+}
+
+function drawPillar(now) {
+  if (SP.pillar <= 0) return;
+  const top = Math.round(FY - SP.pillar * (FY + 2)), h = FY - top; if (h <= 0) return;
+  const breath = calm ? 1 : 1 + .1 * Math.sin(now / 140) + SP.flare * .9, dw = Math.round(26 * breath), dx = CX - Math.round(dw / 2);
+  f.save(); f.globalCompositeOperation = 'lighter';
+  f.globalAlpha = clamp(SP.pillar * 1.4, 0, 1);
+  f.drawImage(pilC, 0, Math.max(0, top) * Q, 26 * Q, h * Q, dx, top, dw, h);
+  if (EMIT) { em.globalAlpha = .5 * f.globalAlpha; em.drawImage(pilC, 0, Math.max(0, top) * Q, 26 * Q, h * Q, dx, top, dw, h); em.globalAlpha = 1; }
+  if (!calm) for (let y = FY - Math.floor(now / 26) % 10; y > top; y -= 10) L(CX - 3, y, 7, 2, 'rgba(255,255,255,.4)');
+  f.restore();
+  ell(f, CX, FY, 9, 2, 'rgba(255,255,255,.55)'); if (EMIT) ell(em, CX, FY, 12, 3, 'rgba(220,240,255,.9)');
+  if (top < 28) { // where it meets the glass dome
+    f.save(); f.globalCompositeOperation = 'lighter'; f.globalAlpha = SP.pillar * .5;
+    for (let y = 0; y < 28; y++) for (let x = 128; x < 192; x++) if (((x + y) & 1) === 0 && Math.abs(x - CX) < 32 - y) R(f, x, y, 1, 1, 'rgba(200,180,255,.5)');
+    f.restore(); if (EMIT) ell(em, CX, 2, 26, 8, 'rgba(210,190,255,.55)');
+  }
+}
+
+function archRunes(now) {
+  const k = Math.max(SP.ring, SP.floor * .6 * SP.floorB); if (k <= 0) return;
+  const spots = [];
+  for (let i = 0; i < 8; i++) { const px = i * 40 + 4; spots.push(px + 9, px + 18); }
+  const order = spots.map((x, i) => ({ x, i, d: Math.abs(x - CX) })).sort((a, b) => a.d - b.d);
+  const lit = Math.floor(k * order.length + .5);
+  for (let j = 0; j < lit; j++) {
+    const s = order[j], flick = calm ? 1 : (Math.sin(now / 200 + s.i * 1.7) > -.6 ? 1 : .55);
+    f.globalAlpha = flick * clamp(k * 1.5, 0, 1);
+    glyph(f, RUNES[(s.i * 5) % RUNES.length], s.x, 36, SP.ring > 0 ? '#ffe38a' : '#c9b8ff', EMIT);
+  }
+  f.globalAlpha = 1;
+}
+
+/* a warm shaft of light from the dome onto him while he presents the answer */
+function spotlight(wx, wy) {
+  f.save(); f.globalCompositeOperation = 'lighter';
+  for (let y = 0; y <= wy; y++) {
+    const t = y / wy, hw = Math.round(3 + t * 13), a = S.lit * (.16 + .2 * t);
+    R(f, wx - hw + 1, y, 2 * hw - 2, 1, `rgba(255,226,140,${a.toFixed(3)})`);
+    if ((y & 1) === 0) { R(f, wx - hw, y, 1, 1, `rgba(255,226,140,${(a * .7).toFixed(3)})`); R(f, wx + hw - 1, y, 1, 1, `rgba(255,226,140,${(a * .7).toFixed(3)})`); }
+  }
+  f.restore();
+  if (EMIT) { em.globalAlpha = S.lit * .5; ell(em, wx, wy - 14, 12, 16, '#ffd98a'); em.globalAlpha = 1; }
+}
+
+/* ---------- particles ---------- */
+function spark(x, y, vx, vy, life, col, kind) { if (P.length < 320) P.push({ x, y, vx, vy, t0: performance.now(), life, col, kind: kind || 's' }); }
+function burst(x, y, n, cols, speed) {
+  if (calm) return;
+  for (let i = 0; i < n; i++) { const a = i / n * TAU + rnd() * .4, v = speed * (.5 + rnd() * .7); spark(x, y, Math.cos(a) * v, Math.sin(a) * v * .8, 500 + rnd() * 500, cols[i % cols.length]); }
+}
+function shock(x, y, big) { if (!calm) SW.push({ x, y, t0: performance.now(), big }); }
+
+/* ---------- familiars ---------- */
+function newFam(id, label, sid) {
+  const used = new Set(FM.map(m => m.pi));
+  let pi = 0; while (used.has(pi) && pi < FPAL.length - 1) pi++;
+  const lines = wrap(label, 14, 3), p = FPAL[pi];
+  // the name tag is drawn once, to its own little canvas
+  const w = Math.max(...lines.map(l => l.length)) * 4 + 5, h = lines.length * 6 + 4;
+  const [pl, px] = mk(w + 2, h + 4);
+  R(px, 0, 0, w + 2, h + 2, '#0c0a14'); R(px, 1, 1, w, h, '#221c36'); R(px, 1, 1, w, 1, p.C); R(px, 1, h, w, 1, '#15121f');
+  R(px, Math.floor(w / 2), h + 2, 3, 1, '#0c0a14'); R(px, Math.floor(w / 2) + 1, h + 3, 1, 1, '#0c0a14');
+  lines.forEach((l, i) => text(px, l, 1 + Math.floor((w - l.length * 4 + 1) / 2) + 1, 3 + i * 6, '#f7f1dc'));
+  return { id, sid, label: String(label || 'a helper'), pi, p, plate: pl, pw: w + 2, state: 'q', t0: 0, x: CX, y: FY - 4, a: 0, slot: null, ret: false, pingT: -1e9, blink: rnd() * 4000, depth: 1, book: newBook(), spellT0: 0, spellEnd: 0, nextCastAt: 0 };
+}
+function enter(fm, state, now) { fm.state = state; fm.t0 = now; }
+function freeSlot() {
+  const used = new Set(FM.filter(m => m.slot).map(m => m.slot));
+  return SLOTS.find(s => !used.has(s)) || { x: 20 + Math.floor(rnd() * 280), y: 90 };
+}
+function popFam(fm) {
+  const now = performance.now(); fm.slot = freeSlot();
+  if (calm) { fm.x = fm.slot.x; fm.y = fm.slot.y - 3; enter(fm, 'fadein', now); return; }
+  enter(fm, 'pop', now); SP.flash = Math.max(SP.flash, .55); SP.flare = 1; shock(CX, CY, true);
+  burst(CX, FY - 8, 22, ['#ffffff', fm.p.C, fm.p.c, '#ffe38a'], 70);
+}
+const hand = () => ({ x: Wz.x + Wz.face * 13, y: Wz.y - 7 });
+function famStep(fm, now) {
+  const t = now - fm.t0, bez = (u, sx, sy, cx, cy, tx, ty) => { const v = 1 - u; return [v * v * sx + 2 * v * u * cx + u * u * tx, v * v * sy + 2 * v * u * cy + u * u * ty]; };
+  switch (fm.state) {
+    case 'pop': fm.x = CX; fm.y = FY - 4 - Math.min(1, t / 380) * 8; fm.a = 1; if (t > 380) { fm.sx = fm.x; fm.sy = fm.y; enter(fm, 'fly', now); } break;
+    case 'fly': {
+      const u = Math.min(1, t / 1400), e = u < .5 ? 2 * u * u : 1 - (-2 * u + 2) ** 2 / 2, tx = fm.slot.x, ty = fm.slot.y - 3;
+      [fm.x, fm.y] = bez(e, fm.sx, fm.sy, (fm.sx + tx) / 2 + (tx < fm.sx ? -20 : 20), Math.min(fm.sy, ty) - 34, tx, ty);
+      if (rnd() < .8) spark(fm.x + rnd() * 4 - 2, fm.y - 5 + rnd() * 4, 0, 6, 600, rnd() < .5 ? fm.p.C : '#ffffff');
+      if (u >= 1) enter(fm, 'work', now);
+      break;
+    }
+    case 'fadein': fm.a = Math.min(1, t / 300); if (t > 300) enter(fm, 'work', now); break;
+    case 'work':
+      fm.a = 1; fm.x = fm.slot.x; fm.y = fm.slot.y - 3 + (calm ? 0 : Math.round(Math.sin(now / 380 + fm.pi * 1.7)));
+      if (fm.ret && t > 500 && !kidsOut(fm)) { if (calm) { enter(fm, 'puff', now); S.scrolls++; } else { fm.sx = fm.x; fm.sy = fm.y; enter(fm, 'back', now); } }
+      break;
+    case 'back': {
+      const u = Math.min(1, t / 1500), e = u < .5 ? 2 * u * u : 1 - (-2 * u + 2) ** 2 / 2, hd = hand();
+      [fm.x, fm.y] = bez(e, fm.sx, fm.sy, (fm.sx + hd.x) / 2, Math.min(fm.sy, hd.y) - 26, hd.x, hd.y);
+      if (rnd() < .6) spark(fm.x + rnd() * 4 - 2, fm.y - 5, 0, 5, 500, fm.p.C);
+      if (u >= 1) { enter(fm, 'give', now); FLY.push({ sx: fm.x - Wz.face * 4, sy: fm.y - 12, t0: now, dur: 650 }); speak('✓ ' + short(fm.label, 28)); }
+      break;
+    }
+    case 'give': { const hd = hand(); fm.x = hd.x; fm.y = hd.y; if (t > 520) { enter(fm, 'puff', now); burst(fm.x, fm.y - 6, 16, ['#ffffff', fm.p.C, fm.p.c], 45); shock(fm.x, fm.y - 6, false); } break; }
+    case 'puff': fm.a = Math.max(0, 1 - t / 420); if (t > 420) { fm.state = 'gone'; $('trip').textContent = tripLabel(); if (SP.floor > 0) { tween(SP, 'floorB', 1, 140).then(() => tween(SP, 'floorB', .45, 700)); } } break;
+  }
+}
+/* a familiar on the fine grid: 22 x 26, a hooded imp with pointed ears, glowing eyes, a clasped cloak and a wisp tail */
+const FAM_ART = (function () {
+  const w = 22, h = 26, G = Array.from({ length: h }, () => Array(w).fill('.'));
+  const put = (x, y, c) => { if (x >= 0 && x < w && y >= 0 && y < h) G[y][x] = c; };
+  // hood: the tip flops to the right
+  const HW = [1, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6, 7, 7], LEAN = [3, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+  HW.forEach((hw, y) => { const l = 11 - hw + LEAN[y], r = 10 + hw + LEAN[y]; for (let x = l; x <= r; x++) put(x, y, x === l || x === r ? 'o' : x === l + 1 ? 'C' : x === r - 1 ? 'b' : 'c'); });
+  put(13, 0, 'o'); put(14, 0, 'o'); put(13, 1, 'C');
+  // face in the hood's shadow, a lit rim round it
+  for (let y = 6; y <= 14; y++) for (let x = 4; x <= 17; x++) {
+    const d = ((x + .5 - 11) / 4.6) ** 2 + ((y + .5 - 11.2) / 3.6) ** 2;
+    if (d < 1) put(x, y, 'd'); else if (d < 1.45 && G[y][x] === 'c') put(x, y, 'C');
+  }
+  put(8, 10, 'e'); put(9, 10, 'E'); put(8, 11, 'E'); put(9, 11, 'E');
+  put(12, 10, 'e'); put(13, 10, 'E'); put(12, 11, 'E'); put(13, 11, 'E');
+  put(10, 13, 'm'); put(11, 13, 'm');
+  // pointed ears poking out of the hood
+  [[2, 7, 'o'], [2, 8, 'o'], [3, 8, 's'], [4, 8, 'o'], [3, 9, 'o'], [4, 9, 's'], [5, 9, 'S'], [4, 10, 'o'], [5, 10, 'S'], [5, 11, 'o']]
+    .forEach(([x, y, ch]) => { put(x, y, ch); put(21 - x, y, ch); });
+  // cloak with a gold clasp and a centre seam
+  const CW = [7, 7, 8, 8, 8, 8, 7, 6];
+  CW.forEach((hw, i) => { const y = 14 + i, l = 11 - hw, r = 10 + hw; for (let x = l; x <= r; x++) put(x, y, x === l || x === r ? 'o' : x === l + 1 ? 'C' : x === r - 1 ? 'b' : (x === 10 || x === 11) && i > 1 ? 'b' : 'c'); });
+  put(10, 14, 'g'); put(11, 14, 'g'); put(10, 15, 'G'); put(11, 15, 'G');
+  // wisp tail curling off to one side
+  [[5, 0], [4, 1], [3, 1], [2, 2], [1, 3], [1, 4]].forEach(([hw, off], i) => {
+    const y = 20 + i, l = 11 - hw + off, r = 10 + hw + off;
+    for (let x = l; x <= r; x++) put(x, y, x === l || x === r ? (i > 3 ? 'C' : 'o') : i > 2 ? 'C' : x === l + 1 ? 'C' : 'c');
+  });
+  return G.map(r => r.join(''));
+})();
+const shade = (hex, k) => '#' + [1, 3, 5].map(i => Math.round(parseInt(hex.substr(i, 2), 16) * k).toString(16).padStart(2, '0')).join('');
+function drawFam(fm, now) {
+  if (fm.state === 'q' || fm.state === 'gone') return;
+  const p = fm.p, fx = Math.round(fm.x * Q), fy = Math.round(fm.y * Q), X0 = fx - 10, Y0 = fy - 24, white = fm.state === 'pop' && now - fm.t0 < 160;
+  const shrink = fm.state === 'puff' ? clamp(Math.floor((now - fm.t0) / 70), 0, 12) : 0; // t0 can sit in the future after the view was hidden
+  const pal = p.pal || (p.pal = { o: '#1a1420', c: p.c, C: p.C, b: shade(p.c, .62), d: '#120d1a', m: '#2a1f33', s: '#f0c09a', S: '#c99070', g: '#ffd76a', G: '#b8892b' });
+  f.save(); f.setTransform(1, 0, 0, 1, 0, 0); f.globalAlpha = fm.a;
+  const px = (x, y, col) => { f.fillStyle = col; f.fillRect(x, y, 1, 1); };
+  // soft dithered halo
+  for (let dy = -17; dy <= 17; dy++) for (let dx = -15; dx <= 15; dx++) { const d = dx * dx / 225 + dy * dy / 289; if (d > .72 && d < 1 && ((dx + dy) & 1) === 0) px(fx + dx, fy - 12 + dy, `rgba(${p.g},.32)`); }
+  const working = fm.state === 'work';
+  if (working && !calm) { // a little rune ring spins under it while it works
+    const r = now / 300 + fm.pi;
+    for (let i = 0; i < 10; i++) { const x = Math.round(fx + Math.cos(r + i * TAU / 10) * 11), y = Math.round(fy + 4 + Math.sin(r + i * TAU / 10) * 2.6); px(x, y, i % 2 ? p.C : '#ffffff'); if (EMIT && i % 2 === 0) em.fillRect(x >> 1, y >> 1, 1, 1); }
+  }
+  const blink = !calm && ((now + fm.blink) % 3200) < 120;
+  // waiting on its own helpers before it may go home: it looks towards them
+  const kids = fm.ret ? WP.filter(w => w.root === fm && w.state !== 'gone' && w.state !== 'extra') : [];
+  // it glances from one to the next, so its gaze reads even when they sit either side of it
+  const eyeOn = kids.length ? kids[Math.floor((calm ? 0 : now) / 800) % kids.length] : null, look = eyeOn ? (eyeOn.x < fm.x ? -1 : 1) : 0;
+  for (let r = shrink; r < FAM_ART.length - shrink; r++) {
+    const row = FAM_ART[r];
+    for (let i = 0; i < 22; i++) {
+      const ch = row[i]; if (ch === '.') continue;
+      const eye = ch === 'e' || ch === 'E';
+      const col = white ? '#ffffff' : eye && look ? pal.d : eye ? (blink ? (r === 10 ? pal.d : p.C) : ch === 'e' ? '#ffffff' : p.C) : pal[ch];
+      px(X0 + i, Y0 + r, col);
+    }
+  }
+  if (look && !white) [8, 12].forEach(ex => { const x = X0 + ex + look; px(x, Y0 + 10, look > 0 ? p.C : '#ffffff'); px(x + 1, Y0 + 10, look > 0 ? '#ffffff' : p.C); px(x, Y0 + 11, p.C); px(x + 1, Y0 + 11, p.C); });
+  if (EMIT && !blink) { em.fillStyle = p.C; em.fillRect((X0 + 8) >> 1, (Y0 + 10) >> 1, 1, 1); em.fillRect((X0 + 12) >> 1, (Y0 + 10) >> 1, 1, 1); }
+  if (working && shrink === 0) { // a tome held open in front, little hands at its corners; it turns the pages as it reads
+    const hot = now - fm.pingT < 350 || now < (fm.spellEnd || 0), bcx = X0 + 10, bt = Y0 + 16;
+    openBook(px, bcx, bt, 7, 5, fm.book, now, { cov: pal.b, covD: '#1a1420', hot, hotInk: p.c, per: 1150 + fm.pi * 90, dur: 560, k: .8 });
+    px(bcx - 9, bt + 4, pal.s); px(bcx - 9, bt + 5, pal.S); px(bcx + 9, bt + 4, pal.s); px(bcx + 9, bt + 5, pal.S);
+    if (hot && EMIT) R(em, (bcx >> 1) - 4, (bt >> 1) - 1, 9, 5, p.C);
+  }
+  if (fm.state === 'back' || fm.state === 'give') { // carrying the finished scroll overhead
+    const sx = X0 + 5, sy = Y0 - 7;
+    for (let a = 0; a < 12; a++) for (let b = 0; b < 4; b++) px(sx + a, sy + b, a < 2 || a > 9 ? (b === 3 ? '#7a5a18' : '#b8892b') : b === 3 ? '#d8c690' : '#f5e6b8');
+    px(sx + 5, sy + 1, '#a0332b'); px(sx + 6, sy + 1, '#a0332b'); px(sx + 5, sy + 2, '#a0332b'); px(sx + 6, sy + 2, '#7a1f1f'); px(sx + 5, sy + 4, '#a0332b'); px(sx + 6, sy + 5, '#a0332b');
+    px(sx - 1, sy + 4, pal.s); px(sx + 12, sy + 4, pal.s);
+  }
+  f.restore();
+}
+function drawPlate(fm, now) {
+  if (!['fly', 'work', 'back', 'fadein'].includes(fm.state)) return;
+  const a = fm.state === 'fly' ? prog(now - fm.t0, 300, 900) : fm.state === 'fadein' ? fm.a : 1;
+  if (a <= 0) return;
+  const w = fm.pw, x = clamp(Math.round(fm.x) - Math.floor(w / 2), 1, W - w - 1), y = Math.round(fm.y) - 16 - fm.plate.height;
+  f.globalAlpha = a; f.drawImage(fm.plate, x, Math.max(1, y));
+  const waits = fm.ret && kidsOut(fm); // amber while it waits for its own helpers
+  if (fm.state === 'work' && (calm || waits || Math.floor(now / 500) % 2)) R(f, x + w - 4, Math.max(1, y) + 1, 2, 1, waits ? '#ffc04a' : '#9dff8a');
+  f.globalAlpha = 1;
+}
+
+/* ---------- helpers of helpers: what a familiar summons for itself ---------- */
+// Depth 1 is a familiar. Depth 2 is a wisp: half a familiar's size, named, tethered to it by a glowing thread,
+// reading its own tiny book. Depth 3 and deeper is a mote, an unnamed firefly circling whoever summoned it, so
+// the scene never clutters. A familiar shows at most four wisps; the rest are counted in a "+N" beside it.
+const WISP_MAX = 4, MOTE_MAX = 6;
+const WISP_ART = (function () { // 11 x 14: a round glowing head, two dark eyes, a tail that curls off to the right
+  const w = 11, h = 14, G = Array.from({ length: h }, () => Array(w).fill('.'));
+  const inside = (x, y) => (((x - 5) / 4.4) ** 2 + ((y - 5) / 4.6) ** 2 < 1) || (y >= 8 && y <= 13 && Math.abs(x - (5 + (y - 8) * .8)) < 3.3 - (y - 8) * .55);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (inside(x, y)) G[y][x] = (x + y < 7) ? 'C' : (x > 6 && y < 9) || !inside(x + 1, y) ? 'b' : 'c';
+    else if ([[1, 0], [-1, 0], [0, 1], [0, -1]].some(([a, b]) => inside(x + a, y + b))) G[y][x] = 'o';
+  }
+  G[1][4] = 'C'; G[2][3] = 'C'; G[5][4] = 'e'; G[5][6] = 'e'; G[4][4] = 'c'; G[4][6] = 'c';
+  return G.map(r => r.join(''));
+})();
+const LIVE = w => w.state !== 'gone' && w.state !== 'extra';
+const kidsOut = a => WP.some(w => w.par === a && w.state !== 'gone');
+function anchorOf(w) { // the nearest ancestor actually on screen
+  let a = w.par;
+  while (a.depth > 1 && (a.depth >= 3 || a.slot < 0 || !LIVE(a))) a = a.par;
+  return a;
+}
+function wispPlate(w) {
+  const l = wrap(w.label, 12, 1)[0], tw = l.length * 4 + 3, th = 9, [pl, x] = mk(tw + 2, th + 2);
+  R(x, 0, 0, tw + 2, th + 2, '#0c0a14'); R(x, 1, 1, tw, th, '#221c36'); R(x, 1, 1, tw, 1, w.p.C);
+  text(x, l, 3, 3, '#f7f1dc');
+  return pl;
+}
+function newWisp(id, label, par, now) {
+  const root = par.depth > 1 ? par.root : par, depth = par.depth + 1;
+  const w = { id, label: String(label || 'a helper'), par, root, depth, p: root.p, pi: root.pi, state: 'q', t0: now, x: par.x, y: par.y, a: 0,
+    ret: false, pingT: -1e9, slot: -1, book: newBook(), blink: rnd() * 4000, orb: rnd() * TAU, trail: [] };
+  if (depth === 2) {
+    const used = new Set(WP.filter(x => x.root === root && x.depth === 2 && x.slot >= 0 && LIVE(x)).map(x => x.slot));
+    for (let i = 0; i < WISP_MAX; i++) if (!used.has(i)) { w.slot = i; break; }
+    if (w.slot < 0) w.state = 'extra'; else w.plate = wispPlate(w);
+  } else if (WP.filter(x => x.depth >= 3 && LIVE(x) && anchorOf(x) === anchorOf(w)).length >= MOTE_MAX) w.state = 'extra';
+  return w;
+}
+// a wisp's post beside its familiar; at the edges of the room they all go on the inward side
+function wispHome(w) {
+  const a = w.root, ax = a.slot ? a.slot.x : a.x, ay = a.slot ? a.slot.y - 3 : a.y, s = ax < 30 ? 1 : ax > W - 30 ? -1 : 0;
+  const OFF = s ? [[14 * s, -2], [14 * s, 9], [36 * s, -2], [36 * s, 9]] : [[-14, -2], [14, -2], [-14, 9], [14, 9]];
+  return { x: ax + OFF[w.slot][0], y: ay + OFF[w.slot][1], low: OFF[w.slot][1] > 0 };
+}
+function moteOrbit(w, anc, now) {
+  const r = (anc.depth === 1 ? 12 : 8) + (w.depth - 3) * 3, a = calm ? w.orb : w.orb + now / 1000 * (1.5 + (w.orb % 1));
+  w.x = anc.x + Math.cos(a) * r; w.y = anc.y - (anc.depth === 1 ? 6 : 3) + Math.sin(a) * r * .45;
+}
+function finishWisp(w, now, anc) {
+  w.state = 'gone';
+  anc.pingT = now; if (anc.book && !anc.book.turnT0) anc.book.nextTurn = now; // the parent's book flashes and turns a page
+  burst(w.x, w.y - 3, w.depth >= 3 ? 6 : 12, ['#ffffff', w.p.C, w.p.c], w.depth >= 3 ? 22 : 34);
+  if (w.depth === 2) shock(anc.x, anc.y - 4, false);
+  // a helper waiting off-screen takes the free place
+  const next = WP.find(x => x.state === 'extra' && !x.ret && (w.depth === 2 ? x.depth === 2 && x.root === w.root : x.depth >= 3 && anchorOf(x) === anc));
+  if (next) { if (next.depth === 2) { next.slot = w.slot; next.plate = wispPlate(next); } next.state = 'q'; next.t0 = now; }
+  $('trip').textContent = tripLabel();
+}
+const bez2 = (u, sx, sy, cx, cy, tx, ty) => { const v = 1 - u; return [v * v * sx + 2 * v * u * cx + u * u * tx, v * v * sy + 2 * v * u * cy + u * u * ty]; };
+function wispStep(w, now) {
+  if (w.state === 'gone') return;
+  if (w.root.state === 'puff' || w.root.state === 'gone') { if (LIVE(w) && w.a > 0) burst(w.x, w.y - 3, 5, [w.p.C, '#ffffff'], 25); w.state = 'gone'; return; }
+  if (w.state === 'extra') { if (w.ret && !kidsOut(w)) { w.state = 'gone'; w.par.pingT = now; $('trip').textContent = tripLabel(); } return; }
+  const t = now - w.t0, anc = anchorOf(w), mote = w.depth >= 3, home = mote ? null : wispHome(w);
+  switch (w.state) {
+    case 'q':
+      if (anc.state !== 'work') return;
+      if (calm) { if (mote) moteOrbit(w, anc, now); else { w.x = home.x; w.y = home.y; } w.a = 0; enter(w, 'fadein', now); return; }
+      if (mote) { moteOrbit(w, anc, now); burst(w.x, w.y, 5, ['#ffffff', w.p.C], 20); enter(w, 'in', now); return; }
+      // the familiar casts: a small circle under it, a thin pillar, and the wisp rises out of it
+      w.castAt = Math.max(now, anc.nextCastAt || 0); anc.nextCastAt = w.castAt + 700;
+      if (now >= (anc.spellEnd || 0)) anc.spellT0 = w.castAt;
+      anc.spellEnd = w.castAt + 1500; enter(w, 'cast', now);
+      break;
+    case 'cast':
+      if (now >= w.castAt + 620) {
+        w.x = anc.x; w.y = anc.y + 3; w.a = 1; enter(w, 'pop', now);
+        burst(anc.x, anc.y + 2, 14, ['#ffffff', w.p.C, w.p.c], 38); shock(anc.x, anc.y + 2, false);
+      }
+      break;
+    case 'pop': { const u = Math.min(1, t / 320); w.x = anc.x; w.y = anc.y + 3 - u * 12; if (u >= 1) { w.sx = w.x; w.sy = w.y; enter(w, 'fly', now); } break; }
+    case 'fly': {
+      const u = Math.min(1, t / 700);
+      [w.x, w.y] = bez2(easeIO(u), w.sx, w.sy, (w.sx + home.x) / 2, Math.min(w.sy, home.y) - 10, home.x, home.y);
+      if (rnd() < .5) spark(w.x + rnd() * 2 - 1, w.y - 2, 0, 4, 400, rnd() < .5 ? w.p.C : '#ffffff');
+      if (u >= 1) enter(w, 'work', now);
+      break;
+    }
+    case 'fadein': w.a = Math.min(1, t / 300); if (mote) moteOrbit(w, anc, now); if (t > 300) enter(w, 'work', now); break;
+    case 'in': w.a = Math.min(1, t / 250); moteOrbit(w, anc, now); if (t > 250) enter(w, 'work', now); break;
+    case 'work':
+      w.a = 1;
+      if (mote) moteOrbit(w, anc, now); else { w.x = home.x; w.y = home.y + (calm ? 0 : Math.round(Math.sin(now / 300 + w.orb) * 1.5) / Q); }
+      if (w.ret && t > 300 && !kidsOut(w)) {
+        if (calm) finishWisp(w, now, anc);
+        else { w.sx = w.x; w.sy = w.y; w.side = w.x < anc.x ? -1 : 1; enter(w, 'back', now); }
+      }
+      break;
+    case 'back': { // home to the parent, to the side of its book
+      const u = Math.min(1, t / (mote ? 500 : 750)), tx = anc.x + (mote ? 0 : w.side * 6), ty = anc.y - (mote ? 5 : 1);
+      [w.x, w.y] = bez2(easeIO(u), w.sx, w.sy, (w.sx + tx) / 2, Math.min(w.sy, ty) - (mote ? 4 : 9), tx, ty);
+      if (u >= 1) { if (mote) finishWisp(w, now, anc); else enter(w, 'give', now); }
+      break;
+    }
+    case 'give': w.x = anc.x + w.side * 6; w.y = anc.y - 1; if (t > 460) finishWisp(w, now, anc); break;
+  }
+  if (mote && !calm) { w.trail.unshift([Math.round(w.x * Q), Math.round(w.y * Q)]); w.trail.length = Math.min(w.trail.length, 4); }
+}
+/* the familiar's own small spell: a rune circle at its post, a thin light pillar, in its colour */
+function drawMiniSpell(fm, now) {
+  if (calm || !fm.spellEnd || now >= fm.spellEnd || now < fm.spellT0) return;
+  const p = fm.p, t = now - fm.spellT0, k = clamp(t / 380, 0, 1), fade = clamp((fm.spellEnd - now) / 380, 0, 1);
+  const fx = Math.round(fm.x * Q), fy = Math.round(fm.y * Q) + 4, rot = now / 240;
+  f.save(); f.setTransform(1, 0, 0, 1, 0, 0); f.globalAlpha = Math.min(1, k * 1.6) * fade;
+  const px = (x, y, col) => { f.fillStyle = col; f.fillRect(x, y, 1, 1); };
+  const ring = (rx, ry, col, sw, dith) => { for (let i = 0, n = Math.ceil(rx * 7 * sw / TAU) + 8; i <= n; i++) { const a = -Math.PI / 2 + sw * i / n; if (!dith || i % 2) px(Math.round(fx + Math.cos(a) * rx), Math.round(fy + Math.sin(a) * ry), col); } };
+  for (let dy = -3; dy <= 3; dy++) { const w = Math.round(15 * Math.sqrt(1 - (dy / 3.6) ** 2) * k); for (let x = -w; x <= w; x++) if ((x + dy) & 1) px(fx + x, fy + dy, `rgba(${p.g},.16)`); }
+  ring(16, 4, p.C, TAU * k, false); ring(11, 2.6, '#ffffff', TAU * k, true);
+  for (let i = 0; i < 8; i++) { const a = rot + i * TAU / 8; if (i / 8 > k) break; const x = Math.round(fx + Math.cos(a) * 13.5), y = Math.round(fy + Math.sin(a) * 3.3); px(x, y, i % 2 ? '#ffffff' : p.C); px(x + 1, y, p.c); }
+  /* the pillar climbs out of the circle */
+  const ph = Math.round(58 * prog(t, 150, 450)), top = fy - ph, br = calm ? 1 : 1 + .25 * Math.sin(now / 60);
+  for (let y = top; y < fy; y++) {
+    const edge = (y - top) < 4;
+    px(fx, y, '#ffffff'); if (!edge) { px(fx - 1, y, p.C); px(fx + 1, y, p.C); }
+    if ((y & 1) && br > 1) { px(fx - 2, y, `rgba(${p.g},.5)`); px(fx + 2, y, `rgba(${p.g},.5)`); }
+  }
+  if (!calm && ph > 10) for (let y = fy - Math.floor(now / 22) % 8; y > top; y -= 8) { px(fx - 1, y, '#ffffff'); px(fx + 1, y, '#ffffff'); }
+  f.restore();
+  if (EMIT) { em.globalAlpha = .8 * fade; ell(em, Math.round(fm.x), Math.round(fm.y) + 2, 8, 2, `rgb(${p.g})`); if (ph) R(em, Math.round(fm.x) - 1, Math.round(fm.y) + 2 - Math.ceil(ph / Q), 2, Math.ceil(ph / Q), `rgb(${p.g})`); em.globalAlpha = 1; }
+  if (rnd() < .6) spark(fm.x + rnd() * 14 - 7, fm.y + 2, rnd() * 6 - 3, -(18 + rnd() * 30), 700, rnd() < .5 ? p.C : '#ffffff');
+}
+/* the thread that ties a wisp to its familiar: faint, sagging, with a bead of light running along it */
+function drawThread(w, now) {
+  if (w.depth !== 2 || !['work', 'fly', 'back', 'give', 'fadein'].includes(w.state)) return;
+  const a = w.root, sd = w.x < a.x ? -1 : 1, x0 = (a.x + sd * 5) * Q, y0 = (a.y - 4) * Q, x1 = w.x * Q, y1 = (w.y - 3) * Q;
+  const mx = (x0 + x1) / 2, my = Math.max(y0, y1) + 7, n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 1.4) + 4, bead = calm ? -1 : (now / 1300 + w.orb) % 1;
+  f.save(); f.setTransform(1, 0, 0, 1, 0, 0); f.globalAlpha = w.a * (w.state === 'work' ? 1 : .6);
+  let lx = -1, ly = -1;
+  for (let i = 0; i <= n; i++) {
+    const u = i / n, v = 1 - u, x = Math.round(v * v * x0 + 2 * v * u * mx + u * u * x1), y = Math.round(v * v * y0 + 2 * v * u * my + u * u * y1);
+    if (x === lx && y === ly) continue; lx = x; ly = y;
+    const hot = bead >= 0 && Math.abs(u - bead) < .04;
+    f.fillStyle = hot ? '#ffffff' : i % 3 ? `rgba(${w.p.g},.45)` : `rgba(${w.p.g},.8)`; f.fillRect(x, y, 1, 1);
+    if (EMIT && (hot || i % 5 === 0)) { em.globalAlpha = hot ? .9 : .22; em.fillStyle = `rgb(${w.p.g})`; em.fillRect(Math.floor(x / Q), Math.floor(y / Q), 1, 1); }
+  }
+  em.globalAlpha = 1; f.restore();
+}
+function drawWisp(w, now) {
+  if (!['pop', 'fly', 'work', 'back', 'give', 'fadein', 'in'].includes(w.state)) return;
+  const p = w.p;
+  f.save(); f.setTransform(1, 0, 0, 1, 0, 0); f.globalAlpha = w.a;
+  const px = (x, y, col) => { f.fillStyle = col; f.fillRect(x, y, 1, 1); };
+  if (w.depth >= 3) { // a mote: a firefly with a short fading tail
+    const x = Math.round(w.x * Q), y = Math.round(w.y * Q), on = calm || Math.sin(now / 160 + w.orb * 5) > -.5;
+    w.trail.forEach(([tx, ty], i) => { if (i) px(tx, ty, `rgba(${p.g},${(.5 - i * .12).toFixed(2)})`); });
+    px(x, y, '#ffffff'); px(x + 1, y, '#ffffff'); px(x, y + 1, on ? '#ffffff' : p.C); px(x + 1, y + 1, p.C);
+    const rim = on ? p.C : `rgba(${p.g},.55)`;
+    [[-1, 0], [-1, 1], [2, 0], [2, 1], [0, -1], [1, -1], [0, 2], [1, 2]].forEach(([a, b]) => px(x + a, y + b, rim));
+    if (on) [[-2, 0], [3, 1], [1, -2], [0, 3]].forEach(([a, b]) => px(x + a, y + b, `rgba(${p.g},.45)`));
+    f.restore();
+    if (EMIT) { em.globalAlpha = on ? .9 : .4; em.fillStyle = `rgb(${p.g})`; em.fillRect(Math.round(w.x) - 1, Math.round(w.y) - 1, 3, 3); em.globalAlpha = 1; }
+    return;
+  }
+  const pal = w.pal || (w.pal = { o: shade(p.c, .42), c: p.c, C: p.C, b: shade(p.c, .8), e: '#1a1420' });
+  const X0 = Math.round(w.x * Q) - 5, Y0 = Math.round(w.y * Q) - 12, blink = !calm && ((now + w.blink) % 2900) < 110;
+  for (let dy = -9; dy <= 9; dy++) for (let dx = -8; dx <= 8; dx++) { const d = dx * dx / 64 + dy * dy / 81; if (d > .7 && d < 1 && ((dx + dy) & 1) === 0) px(X0 + 5 + dx, Y0 + 6 + dy, `rgba(${p.g},.3)`); }
+  const white = w.state === 'pop' && now - w.t0 < 120;
+  for (let r = 0; r < WISP_ART.length; r++) for (let i = 0; i < 11; i++) {
+    const ch = WISP_ART[r][i]; if (ch === '.') continue;
+    px(X0 + i, Y0 + r, white ? '#ffffff' : ch === 'e' ? (blink ? pal.c : pal.e) : pal[ch]);
+  }
+  if (w.state === 'work' || w.state === 'fadein') { // its own tiny glowing book, pages flicking
+    const hot = now - w.pingT < 350;
+    openBook(px, X0 + 5, Y0 + 8, 3, 3, w.book, now, { cov: shade(p.c, .62), covD: '#1a1420', paper: '#fffbe8', ink: '#9a8a70', hot, hotInk: p.c, per: 1150 + (w.orb % 1) * 400, dur: 420, k: .85 });
+    px(X0, Y0 + 11, '#f0c09a'); px(X0 + 10, Y0 + 11, '#f0c09a');
+  }
+  if (w.state === 'back' || w.state === 'give') { // a tiny scroll, handed over into the parent's book
+    const g = w.state === 'give' ? easeIO(Math.min(1, (now - w.t0) / 400)) : 0, sx = X0 + 3 - Math.round(g * w.side * 10), sy = Y0 - 4 + Math.round(g * 7);
+    if (g < 1) { for (let a = 0; a < 6; a++) for (let b = 0; b < 3; b++) px(sx + a, sy + b, a === 0 || a === 5 ? '#b8892b' : b === 2 ? '#d8c690' : '#f5e6b8'); px(sx + 3, sy + 1, '#a0332b'); }
+  }
+  f.restore();
+  if (EMIT) { em.globalAlpha = w.a * .6; ell(em, Math.round(w.x), Math.round(w.y) - 3, 3, 3, `rgb(${p.g})`); em.globalAlpha = 1; }
+}
+function drawWispPlate(w) {
+  if (w.depth !== 2 || !w.plate || !['work', 'fadein'].includes(w.state)) return;
+  const home = wispHome(w), pw = w.plate.width / Q, ph = w.plate.height / Q;
+  const x = clamp(Math.round((w.x - pw / 2) * Q) / Q, 1, W - pw - 1), y = home.low ? Math.round(w.y * Q + 4) / Q : Math.round((w.y - 7) * Q) / Q - ph;
+  f.globalAlpha = w.a * .92; f.drawImage(w.plate, x, y, pw, ph); f.globalAlpha = 1;
+}
+/* "+N" beside a familiar: helpers it has summoned that have no room on screen */
+function drawExtra(fm) {
+  if (fm.state !== 'work') return;
+  const n = WP.filter(w => w.root === fm && w.state === 'extra').length; if (!n) return;
+  const s = '+' + n, x = Math.round(fm.x) - s.length * 2 + 1, y = Math.round(fm.y) + 4;
+  R(f, x - 1, y - 1, s.length * 4 + 1, 7, 'rgba(12,10,20,.75)'); text(f, s, x, y, fm.p.C);
+}
+
+/* ---------- the frame ---------- */
+function frame(now) {
+  raf = 0;
+  const dt = Math.min(.1, (now - lastT) / 1000); lastT = now;
+  stepTweens(now);
+  if (!calm) SP.rot += dt * (.35 + SP.charge * 2.4);
+  SP.flare = Math.max(0, SP.flare - dt * 2.5); SP.flash = Math.max(0, SP.flash - dt * 3.2);
+  FM.forEach(m => famStep(m, now));
+  WP.forEach(w => wispStep(w, now));
+  for (let i = WP.length - 1; i >= 0; i--) if (WP[i].state === 'gone') WP.splice(i, 1);
+  for (let i = FM.length - 1; i >= 0; i--) if (FM[i].state === 'gone') FM.splice(i, 1);
+  if (!FM.length && !casting && SP.floor > 0 && !closing) closePortal();
+  const dz = dozing(now);
+  EMIT = SP.floor > 0 || SP.ring > 0 || SP.pillar > 0 || FM.length > 0 || GL.length > 0 || P.length > 0 || Wz.glow || Wz.pose === 'cast' || SW.length > 0;
+  if (EMIT) em.clearRect(0, 0, W, H);
+
+  f.drawImage(statC, 0, 0, W, H);
+  if (S.pulled >= 0) { const b = books[S.pulled]; R(f, b.x, b.y, b.w, b.h, '#22160d'); R(f, b.x, b.y - 2, b.w, b.h, b.c); R(f, b.x, b.y - 3, b.w, 1, 'rgba(255,240,170,.8)'); }
+  f.globalAlpha = (calm ? .85 : .7 + .3 * Math.sin(now / 1600)) * (1 - S.dim); f.drawImage(beamC, 0, 0, W, H); f.globalAlpha = 1;
+  motes.forEach(m => { if (!calm && !dz) { m.y -= .04; m.p += .01; if (m.y < 34) m.y = 150; } R(f, Math.round((m.x + Math.sin(m.p) * 4) * Q) / Q, Math.round(m.y * Q) / Q, 1 / Q, 1 / Q, 'rgba(255,246,204,.9)'); });
+  /* readers at the long desk */
+  [[166, 0, 'tail'], [198, 1.3, 'hood'], [268, 2.1, 'phones'], [300, .7, '']].forEach(([x, d, acc]) => {
+    const nod = calm ? 0 : (Math.sin(now / 800 + d * 3) > .6 ? 1 : 0), y0 = 129 + (S.watch || S.dim > .3 ? 0 : nod) - (S.watch || S.dim > .3 ? 1 : 0);
+    R(f, x - 5, 131, 10, 16, '#0e1116');
+    R(f, x - 6, y0 + 7, 12, 12, INK); R(f, x - 5, y0 + 6, 10, 1, INK);
+    R(f, x - 2, y0, 4, 1, INK); R(f, x - 3, y0 + 1, 6, 4, INK); R(f, x - 2, y0 + 5, 4, 1, INK);
+    if (acc === 'tail') R(f, x - 5, y0 + 1, 2, 2, INK);
+    if (acc === 'hood') R(f, x - 3, y0 - 1, 6, 2, '#2a231e');
+    if (acc === 'phones') { R(f, x - 3, y0 - 1, 6, 1, '#3a3f47'); R(f, x - 4, y0 + 1, 1, 3, '#3a3f47'); R(f, x + 3, y0 + 1, 1, 3, '#3a3f47'); }
+    const fl = calm ? 1 : (Math.sin(now / 300 + d * 5) > -.3 ? 1 : .5);
+    R(f, x - 2, y0 + 3, 4, 2, `rgba(200,225,245,${.35 * fl})`);
+    R(f, x - 4, 142, 8, 5, '#2a3440'); R(f, x - 1, 144, 2, 1, `rgba(207,227,245,${fl})`);
+  });
+  R(f, 146, 147, 174, 5, '#a86a2c'); R(f, 146, 147, 174, 1, '#dfae68'); R(f, 146, 152, 174, 1, 'rgba(0,0,0,.4)');
+  if (S.lit > 0) { f.globalAlpha = S.lit * .12; R(f, 0, 0, W, H, '#ffe08a'); f.globalAlpha = 1; }
+  /* ladder */
+  if (S.ladder > 0) {
+    const Lx = 231 + Math.round((1 - S.ladder) * 24); f.globalAlpha = S.ladder;
+    for (let y = 86; y < 160; y += 5) R(f, Lx, y, 13, 1, '#8a5a25');
+    R(f, Lx, 84, 1, 76, '#c08a44'); R(f, Lx + 12, 84, 1, 76, '#c08a44'); R(f, Lx + 1, 84, 1, 76, '#6d4418'); R(f, Lx + 11, 84, 1, 76, '#6d4418');
+    R(f, Lx - 1, 82, 3, 2, '#e6c460'); R(f, Lx + 11, 82, 3, 2, '#e6c460'); R(f, Lx - 1, 160, 3, 2, '#222'); R(f, Lx + 11, 160, 3, 2, '#222'); f.globalAlpha = 1;
+  }
+  /* collected books stacked on the table, scrolls from the familiars beside them */
+  for (let i = 0; i < Math.min(S.stack, 12); i++) { const col = BC[(i * 5 + 2) % BC.length], y = 150 - 2 * (i + 1), off = (i % 3) - 1; R(f, 56 + off, y, 12, 2, col); R(f, 56 + off, y, 12, 1, 'rgba(255,255,255,.18)'); R(f, 58 + off, y, 1, 2, '#d8b45a'); }
+  for (let i = 0; i < Math.min(S.scrolls, 6); i++) { const x = 91 + (i % 2) * 2, y = 149 - i * 2; R(f, x, y, 10, 2, '#f5e6b8'); R(f, x, y, 1, 2, '#b8892b'); R(f, x + 9, y, 1, 2, '#b8892b'); R(f, x + 4, y, 1, 2, '#a0332b'); }
+
+  /* the spell dims the room so its light carries */
+  if (S.dim > 0) {
+    R(f, 0, 0, W, H, `rgba(12,6,34,${(.68 * S.dim).toFixed(3)})`);
+    [[58, 128], [116, 128], [68, 136], [106, 136]].forEach(([sx, sy]) => R(f, sx - 3, sy, 7, 1, `rgba(255,246,200,${(.8 * S.dim).toFixed(3)})`));
+    [[166, 129], [198, 129], [268, 129], [300, 129]].forEach(([x, y]) => R(f, x - 3, y + 1, 6, 4, `rgba(190,170,255,${(.45 * S.dim).toFixed(3)})`));
+  }
+  archRunes(now);
+  drawFloor(now); drawMandala(now); drawPillar(now);
+  for (let i = SW.length - 1; i >= 0; i--) {
+    const s = SW[i], t = (now - s.t0) / (s.big ? 520 : 380); if (t >= 1) { SW.splice(i, 1); continue; }
+    f.globalAlpha = 1 - t;
+    const r = s.big ? 8 + 58 * t : 3 + 16 * t;
+    ringL(s.x, s.y, r, r, '#efe8ff', 0, TAU);
+    if (s.big) ringL(CX, FY, 10 + 60 * t, (10 + 60 * t) / 6, '#c9b8ff', 0, TAU);
+    f.globalAlpha = 1;
+  }
+  /* the wizard's light and the familiars' halos go into the glow pass; the sprites are drawn after it, crisp */
+  const bob = calm || dz ? 0 : Wz.anim === 'run' ? (Math.floor(now / 110) % 2 ? -1 : 0) : Wz.anim === 'idle' && !Wz.tinker && !Wz.pose ? (Math.floor(now / 650) % 2 ? -1 : 0) : 0;
+  let hop = 0; if (now < Wz.hopUntil) hop = -Math.round(Math.abs(Math.sin((now - Wz.hopStart) / 450 * Math.PI)) * 6);
+  const wx = Math.round(Wz.x), wy = Math.round(Wz.y);
+  if (Wz.glow && S.lit > 0) spotlight(wx, wy);
+  if (EMIT && (Wz.pose === 'cast' || Wz.glow) && Wz.skin === 'wiz') {
+    const ox = wx + Wz.face * 7, oy = wy - 26 + bob + hop + (Wz.pose === 'cast' ? -5 : 0);
+    ell(em, ox, oy, 5, 5, Wz.pose === 'cast' ? '#dff8ff' : '#ffe38a');
+    if (Wz.pose === 'cast' && !calm && rnd() < .5) spark(ox, oy, (rnd() - .5) * 30, 10 + rnd() * 30, 700, rnd() < .5 ? '#ffffff' : '#b4f4ff');
+  }
+  if (EMIT) FM.forEach(m => { if (m.state !== 'q' && m.state !== 'gone') { em.globalAlpha = m.a; ell(em, Math.round(m.x), Math.round(m.y) - 6, 6, 7, `rgba(${m.p.g},.55)`); em.globalAlpha = 1; } });
+  /* hypotheses rise off the page while he reads */
+  if ((Wz.pose === 'read' || Wz.pose === 'jot') && Wz.anim === 'idle' && !calm && !dz && now > nextGlyph) {
+    nextGlyph = now + 260 + rnd() * 240;
+    const r = rnd(), bx = wx + (Wz.face > 0 ? 2 : -3);
+    GL.push({ x: bx + Math.round(rnd() * 8 - 4), y: wy - 15, t0: now, life: 3200, ch: HYP[Math.floor(rnd() * HYP.length)], kind: r < .22 ? 'yes' : r < .44 ? 'no' : 'n', drift: rnd() * 2 - 1 });
+  }
+  for (let i = GL.length - 1; i >= 0; i--) {
+    const gl = GL[i], u = (now - gl.t0) / gl.life, end = gl.kind === 'no' ? .8 : 1;
+    if (u >= end) { GL.splice(i, 1); continue; }
+    gl.u = u; gl.a = Math.min(1, u / .1, (end - u) / .22);
+    gl.px = Math.round(gl.x + Math.sin(u * 5 + gl.drift * 3) * 2 + gl.drift * u * 12); gl.py = Math.round(gl.y - u * 48);
+    if (EMIT && !(gl.kind === 'no' && u > .45)) { em.globalAlpha = gl.a * .45; R(em, gl.px, gl.py, 3, 5, gl.kind === 'yes' && u > .45 ? '#ffe38a' : '#6fd8ff'); em.globalAlpha = 1; }
+  }
+  /* sparks */
+  for (let i = P.length - 1; i >= 0; i--) {
+    const p = P[i], u = (now - p.t0) / p.life; if (u >= 1) { P.splice(i, 1); continue; }
+    if (p.kind === 'v') { p.a += p.w * dt; p.r -= p.sp * dt; if (p.r < 3) { P.splice(i, 1); continue; } p.x = CX + Math.cos(p.a) * p.r; p.y = CY + Math.sin(p.a) * p.r; }
+    else { const fr = Math.pow(.9, dt * 60); p.vx *= fr; p.vy *= fr; p.x += p.vx * dt; p.y += p.vy * dt; }
+    f.globalAlpha = 1 - u; L(Math.round(p.x), Math.round(p.y), 1, 1, p.col);
+  }
+  f.globalAlpha = 1;
+  if (!calm && SP.ring > .5 && SP.charge > 0 && rnd() < SP.charge * .9) { const a = rnd() * TAU; P.push({ kind: 'v', a, r: 44, w: 2.5 + rnd(), sp: 28 + rnd() * 20, x: 0, y: 0, t0: now, life: 2000, col: rnd() < .5 ? '#ffe38a' : '#c9f6ff' }); }
+  if (!calm && SP.pillar > .5 && rnd() < .7) spark(CX + (rnd() * 12 - 6), FY - 2, 0, -(40 + rnd() * 70), 1100, rnd() < .6 ? '#ffffff' : '#b9a8ff');
+  if (!calm && SP.floor > 0 && SP.ring <= 0 && rnd() < .15) spark(CX + (rnd() * 44 - 22), FY + rnd() * 4 - 2, 0, -(6 + rnd() * 8), 1600, '#b9a8ff', 'e');
+  if (EMIT) bloom();
+
+  if (Wz.anim !== 'climb') { R(f, wx - 6, wy, 12, 1, 'rgba(0,0,0,.35)'); R(f, wx - 4, wy + 1, 8, 1, 'rgba(0,0,0,.22)'); }
+  if (Wz.trip) {
+    tc.clearRect(0, 0, tmpC.width, tmpC.height); drawWiz(tc, 6 * Q, 4 * Q, 1, now);
+    f.save(); f.translate(wx + 17, wy - 22); f.rotate(Math.PI / 2); f.drawImage(tmpC, 0, 0, 28, 34); f.restore();
+    for (let k = 0; k < 3; k++) {
+      const a = now / 200 + k * 2.1, sx = wx + 10 + Math.round(Math.cos(a) * 6), sy = wy - 19 + Math.round(Math.sin(a) * 2);
+      R(f, sx, sy, 1, 1, '#fff2a0'); R(f, sx - 1, sy, 1, 1, '#f0b429'); R(f, sx + 1, sy, 1, 1, '#f0b429'); R(f, sx, sy - 1, 1, 1, '#f0b429'); R(f, sx, sy + 1, 1, 1, '#f0b429');
+    }
+  } else { f.save(); f.setTransform(1, 0, 0, 1, 0, 0); drawWiz(f, Math.round(Wz.x * Q) - 8 * Q, (wy - 27 + bob + hop) * Q, Wz.face, now); f.restore(); }
+  /* the hypotheses: each one either holds up (turns gold) or fails (reddens, struck out) */
+  GL.forEach(gl => {
+    const x = gl.px, y = gl.py; f.globalAlpha = gl.a;
+    if (gl.kind === 'yes' && gl.u > .45) {
+      glyph(f, FONT['!'], x + 1, y + 1, '#3a2a10', false); glyph(f, FONT['!'], x, y, '#ffe38a', false);
+      const s = Math.floor(now / 90) % 2 ? 3 : 4;
+      [[s, 0], [-s, 0], [0, s], [0, -s]].forEach(([a, b]) => R(f, x + 1 + a, y + 2 + b, 1, 1, '#fff6c8'));
+    } else if (gl.kind === 'no' && gl.u > .45) {
+      glyph(f, FONT[gl.ch] || FONT['?'], x + 1, y + 1, '#2a0e14', false); glyph(f, FONT[gl.ch] || FONT['?'], x, y, '#ff7a7a', false); R(f, x - 1, y + 2, 5, 1, '#ffe0e0');
+    } else { glyph(f, FONT[gl.ch] || FONT['?'], x + 1, y + 1, '#10243a', false); glyph(f, FONT[gl.ch] || FONT['?'], x, y, '#aef0ff', false); }
+  });
+  f.globalAlpha = 1;
+  /* familiars, working ones first so the travellers fly over them; their own spells and threads sit behind them */
+  FM.forEach(m => drawMiniSpell(m, now));
+  WP.forEach(w => drawThread(w, now));
+  FM.slice().sort((a, b) => (a.state === 'work' ? 0 : 1) - (b.state === 'work' ? 0 : 1)).forEach(m => drawFam(m, now));
+  WP.forEach(w => drawWisp(w, now));
+  /* summoned books */
+  const hx = Wz.x + Wz.face * 5, hy = Wz.y - 10;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i], t = (now - p.t0) / 1150; if (t < 0) continue; if (t >= 1) { parts.splice(i, 1); continue; }
+    const cx = (p.sx + hx) / 2, cy = Math.min(p.sy, hy) - 24, u = 1 - t, x = Math.round(u * u * p.sx + 2 * u * t * cx + t * t * hx), y = Math.round(u * u * p.sy + 2 * u * t * cy + t * t * hy);
+    f.globalAlpha = t < .15 ? t / .15 : t > .85 ? (1 - t) / .15 : 1; R(f, x - 1, y - 1, 4, 5, 'rgba(255,236,160,.5)'); R(f, x, y, 2, 3, p.c); R(f, x, y, 1, 3, 'rgba(255,255,255,.3)'); f.globalAlpha = 1;
+  }
+  /* scrolls handed over, flying to the table */
+  for (let i = FLY.length - 1; i >= 0; i--) {
+    const s = FLY[i], t = (now - s.t0) / s.dur; if (t >= 1) { FLY.splice(i, 1); S.scrolls++; continue; }
+    const tx = 96, ty = 148 - Math.min(S.scrolls, 5) * 2, u = 1 - t, cx = (s.sx + tx) / 2, cy = Math.min(s.sy, ty) - 20;
+    const x = Math.round(u * u * s.sx + 2 * u * t * cx + t * t * tx), y = Math.round(u * u * s.sy + 2 * u * t * cy + t * t * ty);
+    R(f, x - 1, y - 1, 7, 4, 'rgba(255,236,160,.45)'); R(f, x, y, 5, 2, '#f5e6b8'); R(f, x, y, 1, 2, '#b8892b'); R(f, x + 4, y, 1, 2, '#b8892b');
+  }
+  FM.forEach(m => drawPlate(m, now));
+  WP.forEach(w => drawWispPlate(w)); FM.forEach(drawExtra);
+  if (SP.flash > 0 && !calm) { f.globalAlpha = SP.flash * .5; R(f, 0, 0, W, H, '#f2ecff'); f.globalAlpha = 1; }
+  f.drawImage(vigC, 0, 0);
+  /* camera follows him whenever the view is smaller than the room */
+  const tx = Math.max(0, Math.min(W - view.w, Wz.x - view.w / 2)), ty = Math.max(0, Math.min(H - view.h, Wz.y - view.h * .72));
+  cam.x += (tx - cam.x) * .15; cam.y += (ty - cam.y) * .15;
+  vctx.drawImage(frameC, Math.round(cam.x * Q), Math.round(cam.y * Q), view.w * Q, view.h * Q, 0, 0, view.w * Q, view.h * Q);
+  /* speech bubble follows him */
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  const top = (Wz.y - (Wz.trip ? 20 : 34) - cam.y) / view.h;
+  const bw = say.offsetWidth / 2 + 6, bh = say.offsetHeight + 10;
+  const lx = Math.max(bw, Math.min(sw - bw, (Wz.x - cam.x) / view.w * sw));
+  const bottom = Math.min(sh - bh, Math.max(4, (1 - top) * sh + 4));
+  say.style.left = lx + 'px'; say.style.bottom = bottom + 'px';
+  schedule(fpsFor(now, dz));
+}
+
+function bloom() {
+  b2.clearRect(0, 0, W / 2, H / 2); b2.drawImage(emC, 0, 0, W / 2, H / 2);
+  b4.clearRect(0, 0, W / 4, H / 4); b4.drawImage(b2C, 0, 0, W / 4, H / 4);
+  b8.clearRect(0, 0, b8C.width, b8C.height); b8.drawImage(b4C, 0, 0, b8C.width, b8C.height);
+  f.save(); f.globalCompositeOperation = 'lighter'; f.imageSmoothingEnabled = true;
+  f.globalAlpha = .5; f.drawImage(b8C, 0, 0, W, b8C.height * 8);
+  f.globalAlpha = .55; f.drawImage(b4C, 0, 0, W, H);
+  f.globalAlpha = .4; f.drawImage(b2C, 0, 0, W, H);
+  f.restore();
+}
+
+/* Frame pacing. Full speed only while something is actually moving; a few frames a second otherwise,
+   and none at all when motion is reduced and nothing is happening. */
+let raf = 0, tmo = 0;
+function fpsFor(now, dz) {
+  if (document.hidden) return 0;
+  // slow embers ('e') are fine at the working rate; everything else that flies needs full speed
+  const moving = tweens.length || parts.length || P.some(p => p.kind !== 'e') || SW.length || FLY.length || SP.flash > 0 || SP.flare > 0 || SP.ring > 0 || SP.pillar > 0 || casting ||
+    FM.some(m => m.state !== 'work' || now < m.spellEnd) || WP.some(w => !['work', 'extra', 'q', 'gone'].includes(w.state)) || now < Wz.hopUntil || Wz.trip || Wz.anim !== 'idle';
+  if (moving) return 60;
+  if (GL.length || FM.length || P.length || SP.floor > 0 || Wz.pose || Wz.tinker || now < Wz.waveUntil || Wz.glow) return calm ? 4 : 20;
+  if (calm) return say.classList.contains('on') ? 4 : 0;
+  return dz ? 2 : 4;
+}
+function schedule(fps) {
+  if (fps >= 60) raf = requestAnimationFrame(frame);
+  else if (fps > 0) tmo = setTimeout(() => { tmo = 0; raf = requestAnimationFrame(frame); }, 1000 / fps);
+}
+function wake() { if (tmo) { clearTimeout(tmo); tmo = 0; } if (!raf) raf = requestAnimationFrame(frame); }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
+
+function layout() {
+  const sw = Math.max(1, stage.clientWidth), sh = Math.max(1, stage.clientHeight);
+  const s = Math.max(sw / W, sh / H, 2); // fill the stage, never smaller than 2x pixels
+  view.w = Math.max(40, Math.min(W, Math.round(sw / s)));
+  view.h = Math.max(30, Math.min(H, Math.round(sh / s)));
+  cv.width = view.w * Q; cv.height = view.h * Q; vctx = cv.getContext('2d'); vctx.imageSmoothingEnabled = false;
+  const bodyH = document.body.clientHeight, bodyW = document.body.clientWidth;
+  document.body.classList.toggle('compact', bodyH < 260 || bodyW < 420);
+  document.body.classList.toggle('tiny', bodyH < 150);
+  wake();
+}
+new ResizeObserver(layout).observe(document.body);
+
+/* tweens */
+const tweens = [], easeIO = p => p < .5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2, lin = p => p;
+function tween(obj, key, to, dur, ease = easeIO) {
+  for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].obj === obj && tweens[i].key === key) { tweens[i].res(); tweens.splice(i, 1); }
+  if (document.hidden || dur <= 0) { obj[key] = to; return Promise.resolve(); }
+  wake();
+  return new Promise(res => tweens.push({ obj, key, from: obj[key], to, t0: performance.now(), dur, ease, res }));
+}
+function stepTweens(now) { for (let i = tweens.length - 1; i >= 0; i--) { const tw = tweens[i], p = Math.max(0, Math.min(1, (now - tw.t0) / tw.dur)); tw.obj[tw.key] = tw.from + (tw.to - tw.from) * tw.ease(p); if (p >= 1) { tweens.splice(i, 1); tw.res(); } } }
+// timers keep running when the view is hidden; rAF doesn't, so finish tweens instantly then
+document.addEventListener('visibilitychange', () => { if (document.hidden) { const n = performance.now() + 1e6; stepTweens(n); FM.forEach(m => famStep(m, n)); WP.forEach(w => wispStep(w, n)); } });
+
+const pull = () => { S.pulled = Math.floor(Math.random() * books.length); };
+const unpull = () => { S.pulled = -1; };
+function flyBooks(n) { if (calm) return; const now = performance.now(); for (let i = 0; i < n; i++) { const b = books[Math.floor(Math.random() * books.length)]; parts.push({ sx: b.x, sy: b.y, c: b.c, t0: now + i * 260 }); } wake(); }
+
+/* ================= choreography ================= */
+/* One director loop acts out the latest thing Claude is doing. Events arrive faster than he can run,
+   so he always skips to the newest one instead of replaying a backlog. Summons and stumbles jump the line. */
+let atLib = false, level = 0, source = '', closing = false;
+let goal = { mode: 'idle' }, rev = 0, kick = null, gapT = 0, errQ = null, thinkN = 0;
+const famQ = [];
+const short = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+const speak = t => { say.textContent = t; say.classList.add('on'); wake(); }, quiet = () => say.classList.remove('on');
+const hideCards = () => { ans.hidden = true; ask.hidden = true; };
+function nudge() { if (kick) { const k = kick; kick = null; k(); } wake(); }
+function want(mode, d) { goal = Object.assign({ mode }, d || {}); rev++; lastEv = performance.now(); nudge(); }
+
+async function travel(x, face) { Wz.face = face; Wz.pose = ''; Wz.anim = 'run'; await tween(Wz, 'x', x, Math.max(400, Math.abs(Wz.x - x) / 195 * 950), lin); Wz.anim = 'idle'; }
+async function climbTo(l) {
+  l = Math.max(0, Math.min(2, l | 0));
+  if (l === level) return;
+  const d = Math.abs(l - level) * 750; level = l;
+  const wasT = Wz.tinker; Wz.tinker = false;
+  await tween(S, 'ladder', 1, 300);
+  Wz.anim = 'climb'; await tween(Wz, 'y', LV[l], d, lin); Wz.anim = 'idle';
+  Wz.tinker = wasT;
+  if (l === 0) tween(S, 'ladder', 0, 400);
+}
+async function goTo(x) {
+  if (atLib && x !== X_LIB) { Wz.tinker = false; await climbTo(0); atLib = false; }
+  if (Math.abs(Wz.x - x) > 1) await travel(x, x < Wz.x ? -1 : 1);
+  if (x === X_LIB) atLib = true;
+}
+async function toDesk() {
+  await goTo(X_DESK); Wz.face = 1;
+  if (Wz.pile) { S.stack += Wz.pile; Wz.pile = 0; Wz.carry = null; }
+  if (Wz.carry === 'note' || Wz.carry === 'book') Wz.carry = null;
+}
+
+async function beatHear(g) {
+  hideCards(); quiet(); source = g.src || source;
+  Object.assign(Wz, { anim: 'idle', pose: '', carry: null, pile: 0, tinker: false, trip: false, glow: false, hopUntil: 0 });
+  if (Wz.x !== X_DESK || atLib) await toDesk();
+  Object.assign(S, { lit: 0, watch: 1, stack: 0, scrolls: 0, pulled: -1 }); Wz.carry = 'note'; thinkN = 0;
+  $('trip').textContent = tripLabel();
+  setStep(0);
+  const t = String(g.prompt || '').replace(/\s+/g, ' ');
+  speak('Got it: "' + t.slice(0, 26) + (t.length > 26 ? '…' : '') + '"');
+  await sleep(1300); quiet();
+}
+async function beatResearch(g) {
+  setStep(1); if (g.text) speak(g.text);
+  if (!atLib) { Wz.pose = ''; await goTo(X_LIB); Wz.face = 1; }
+  if (g.depth !== undefined && g.depth !== null) await climbTo(g.depth);
+  Wz.tinker = true; Wz.pose = '';
+  pull(); flyBooks(2); await sleep(700);
+  Wz.pile = Math.min(5, Wz.pile + 1); Wz.carry = 'pile';
+}
+const MUSINGS = ['hmm…', 'what if…', 'maybe it\'s…', 'no, not that', 'that fits!', 'so then…', 'let me check'];
+async function beatThink() {
+  Wz.tinker = false;
+  if (Wz.x !== X_DESK || atLib || Wz.pile) { quiet(); await toDesk(); }
+  setStep(2); unpull();
+  Wz.pose = thinkN % 4 === 3 ? 'jot' : 'read';
+  if (thinkN % 2 === 0) speak(MUSINGS[(thinkN / 2) % MUSINGS.length]); else quiet();
+  thinkN++;
+  await sleep(1500);
+}
+async function beatWrite(g) {
+  Wz.tinker = false;
+  if (Wz.x !== X_DESK || atLib || Wz.pile) { quiet(); await toDesk(); }
+  setStep(3); unpull(); Wz.pose = 'write';
+  if (g.text) speak(g.text);
+  await sleep(400);
+}
+async function beatSummon() {
+  casting = true; closing = false; Wz.tinker = false; unpull(); quiet();
+  if (Wz.pile) await toDesk();
+  await goTo(X_CAST); Wz.face = 1; setStep(4);
+  Wz.pose = 'cast'; wake();
+  if (SP.ring < .95) {
+    const fresh = SP.floor < .1;
+    speak(fresh ? 'By the old runes… come forth!' : 'Another! Come forth!');
+    tween(S, 'dim', 1, fresh ? 600 : 300); tween(SP, 'floorB', 1, 300);
+    if (fresh) { await tween(SP, 'floor', 1, 800, lin); } else tween(SP, 'floor', 1, 200);
+    tween(SP, 'ring', 1, fresh ? 1100 : 500, lin); await sleep(fresh ? 750 : 350);
+    SP.flare = 1; SP.flash = Math.max(SP.flash, .3); tween(SP, 'pillar', 1, fresh ? 450 : 300);
+    await sleep(fresh ? 500 : 300);
+    tween(SP, 'charge', 1, 800); await sleep(fresh ? 900 : 450);
+  }
+  quiet();
+  while (famQ.length) {
+    const fm = famQ.shift(); popFam(fm);
+    $('trip').textContent = tripLabel();
+    await sleep(calm ? 300 : 650);
+  }
+  await sleep(900);
+  if (famQ.length) { casting = false; return; }
+  quiet(); Wz.pose = '';
+  tween(SP, 'charge', 0, 500); tween(SP, 'pillar', 0, 650); tween(SP, 'ring', 0, 900, lin); tween(S, 'dim', 0, 1000);
+  await tween(SP, 'floorB', .45, 900);
+  casting = false; $('trip').textContent = tripLabel();
+  if (['idle', 'hear'].includes(goal.mode)) goal = { mode: 'think' };
+}
+function closePortal() { closing = true; tween(SP, 'floorB', 0, 700).then(() => { SP.floor = 0; SP.floorB = 1; closing = false; }); }
+async function beatWaiting(g) {
+  Wz.tinker = false; unpull();
+  if (Math.abs(Wz.x - (X_CAST - 30)) > 2 || atLib) await goTo(X_CAST - 30);
+  Wz.face = 1; Wz.pose = ''; setStep(4);
+  const n = FM.filter(m => m.state !== 'gone').length || g.n || 0;
+  if (n) speak(`waiting on ${n} familiar${n > 1 ? 's' : ''}…`);
+}
+async function beatPresent(d) {
+  ask.hidden = true; Wz.tinker = false; Wz.pose = ''; unpull(); quiet();
+  setStep(5);
+  await toDesk();
+  Wz.glow = true; Wz.carry = 'scroll'; tween(S, 'lit', 1, 500); S.watch = 1;
+  const now = performance.now(); Wz.hopStart = now; Wz.hopUntil = now + 900;
+  burst(Wz.x + 6, Wz.y - 30, 26, ['#ffe38a', '#ffffff', '#ffd06a', '#fff6c8'], 60);
+  $('anshead').textContent = d.title || 'BACK FROM THE READING ROOM';
+  $('anstext').innerHTML = md(d.text || '');
+  const row = $('ansrow'); row.innerHTML = '';
+  (d.actions || []).forEach((a, i) => {
+    const b = document.createElement('button'); b.className = 'vb' + (i ? ' sec' : ''); b.textContent = a.label;
+    b.onclick = () => vscode.postMessage({ type: 'action', cmd: a.cmd });
+    row.appendChild(b);
+  });
+  ans.hidden = false; speak('Here you go!');
+  await sleep(1900);
+  Wz.carry = null; Wz.glow = false; tween(S, 'lit', 0, 800); S.watch = 0; quiet(); setStep(6);
+  $('trip').textContent = tripLabel();
+}
+async function beatHome() {
+  hideCards(); quiet(); unpull(); Wz.tinker = false; Wz.glow = false; Wz.trip = false; Wz.pose = '';
+  famQ.length = 0;
+  WP.forEach(w => { if (LIVE(w) && w.a > 0) burst(w.x, w.y - 3, 5, [w.p.C, '#ffffff'], 25); w.state = 'gone'; });
+  FM.forEach(m => { if (m.state === 'q') m.state = 'gone'; else if (m.state !== 'puff' && m.state !== 'gone') { burst(m.x, m.y - 6, 10, [m.p.C, '#ffffff'], 40); enter(m, 'puff', performance.now()); } });
+  tween(SP, 'charge', 0, 300); tween(SP, 'pillar', 0, 400); tween(SP, 'ring', 0, 500); tween(S, 'dim', 0, 500);
+  if (atLib || Wz.x !== X_DESK) { speak('coming back…'); await toDesk(); quiet(); }
+  Wz.carry = null; Wz.pile = 0; S.watch = 0; tween(S, 'lit', 0, 400); setStep(-1); $('trip').textContent = '';
+}
+async function beatError(text) {
+  const p = document.querySelector('.pill.on'); if (p) p.classList.add('err');
+  Wz.pose = ''; Wz.trip = true; speak(text || 'oof!'); await sleep(1500);
+  Wz.trip = false; if (p) p.classList.remove('err'); speak('*shrugs* retrying…'); await sleep(800); quiet();
+}
+async function beatDeliver() { // legacy: drop the armful at the desk and head straight back
+  await toDesk(); speak('one more trip!'); await sleep(600); quiet();
+  const lv = level; await goTo(X_LIB); if (lv) await climbTo(lv);
+}
+
+function tripLabel() {
+  const src = { chat: 'VIA CHAT', claude: 'VIA CLAUDE CODE', panel: 'VIA PANEL', demo: 'DEMO' }[source] || '';
+  const n = FM.filter(m => m.state !== 'gone' && m.state !== 'puff').length;
+  const h = WP.filter(w => w.state !== 'gone').length;
+  return (n ? `${n} FAMILIAR${n > 1 ? 'S' : ''} OUT · ` : '') + (h ? `${h} HELPER${h > 1 ? 'S' : ''} · ` : '') + src;
+}
+
+async function beat(g) {
+  switch (g.mode) {
+    case 'hear': await beatHear(g); if (goal === g) goal = { mode: 'think' }; return true;
+    case 'research': await beatResearch(g); return false;
+    case 'think': await beatThink(g); return true;
+    case 'write': await beatWrite(g); return false;
+    case 'waiting': await beatWaiting(g); return false;
+    case 'present': await beatPresent(g); if (goal === g) goal = { mode: 'idle' }; return false;
+    case 'home': await beatHome(g); if (goal === g) goal = { mode: 'idle' }; return false;
+    case 'deliver': await beatDeliver(g); if (goal === g) goal = { mode: 'research' }; return false;
+    default: Wz.pose = ''; return false;
+  }
+}
+(async function director() {
+  for (;;) {
+    const r = rev;
+    try {
+      if (errQ !== null) { const t = errQ; errQ = null; await beatError(t); continue; }
+      if (famQ.length && goal.mode !== 'home') { await beatSummon(); continue; }
+      const again = await beat(goal);
+      if (again || r !== rev || famQ.length || errQ !== null) continue;
+    } catch (e) { console.error(e); casting = false; }
+    await new Promise(res => { kick = res; });
+  }
+})();
+
+function showAsk(text, id) {
+  $('asktext').textContent = text;
+  $('askrow').hidden = !id;
+  ask.dataset.id = id || '';
+  ask.hidden = false;
+  speak(id ? text : 'waiting for you…');
+}
+
+/* tiny markdown: code fences, inline code, bold, headings, line breaks */
+function md(s) {
+  const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).split(/```[^\n`]*\n?([\s\S]*?)```/g).map((p, i) => {
+    if (i % 2) return '<pre><code>' + esc(p.replace(/\n$/, '')) + '</code></pre>';
+    return esc(p)
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+      .replace(/^#{1,6}\s*(.+)$/gm, '<b>$1</b>')
+      .replace(/^\s*[-*]\s+/gm, '• ')
+      .replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
+  }).join('');
+}
+
+/* ================= the scripted demo (Play Demo, and demo.html) ================= */
+const DEMO = [
+  [400, { type: 'start', prompt: 'Rebuild the three restaurant sites', source: 'demo', sid: 'demo' }],
+  [1700, { type: 'research', text: 'reading BRIEF.md', depth: 0 }],
+  [1500, { type: 'research', text: 'searching "menu"', depth: 1 }],
+  [1500, { type: 'research', text: 'reading site-plan.md', depth: 1 }],
+  [1500, { type: 'research', text: 'finding **/*.html', depth: 2 }],
+  [1200, { type: 'post' }],
+  [8200, { type: 'write', text: 'writing PLAN.md' }],
+  [2400, { type: 'post' }],
+  [300, { type: 'summon', id: 'demo-1', label: 'Rebuild Cafe site' }],
+  [700, { type: 'summon', id: 'demo-2', label: 'Rebuild Bakery site' }],
+  [700, { type: 'summon', id: 'demo-3', label: 'Redo Bookshop site' }],
+  [5200, { type: 'famWork', id: 'demo-1' }], [500, { type: 'famWork', id: 'demo-3' }],
+  // the first familiar summons two helpers of its own; they come home before it does
+  [500, { type: 'summon', id: 'demo-1a', label: 'Menu page', parent: 'demo-1' }],
+  [600, { type: 'summon', id: 'demo-1b', label: 'Booking form', parent: 'demo-1' }],
+  [600, { type: 'famWork', id: 'demo-2' }],
+  [700, { type: 'famWork', id: 'demo-3' }], [600, { type: 'famWork', id: 'demo-2' }], [700, { type: 'famWork', id: 'demo-1a' }],
+  [600, { type: 'famWork', id: 'demo-1b' }], [700, { type: 'famWork', id: 'demo-3' }], [600, { type: 'famWork', id: 'demo-1a' }],
+  [900, { type: 'famReturn', id: 'demo-2' }],
+  [700, { type: 'famWork', id: 'demo-1b' }], [700, { type: 'famWork', id: 'demo-1a' }], [800, { type: 'famWork', id: 'demo-3' }],
+  [900, { type: 'famReturn', id: 'demo-1a' }], [700, { type: 'famWork', id: 'demo-1b' }],
+  [900, { type: 'famReturn', id: 'demo-1' }], [500, { type: 'famReturn', id: 'demo-1b' }],
+  [900, { type: 'famWork', id: 'demo-3' }],
+  [2400, { type: 'famReturn', id: 'demo-3' }],
+  [3200, { type: 'answer', title: 'CLAUDE CODE IS DONE', text: '**All three sites are rebuilt.**\n- Cafe: new menu page and booking form\n- Bakery: fixed the broken hours, added the map\n- Bookshop: faster pages, photos back in\n\nPreviews are in `sites/`.', actions: [{ label: 'Copy', cmd: 'copy' }] }],
+  [7500, { type: 'home' }]
+];
+let demoRun = 0;
+async function runDemo(loop) {
+  const my = ++demoRun;
+  do {
+    for (const [ms, m] of DEMO) { await sleep(ms); if (my !== demoRun) return; handle(Object.assign({ sid: 'demo' }, m)); }
+    await sleep(1500);
+  } while (loop && my === demoRun);
+}
+
+/* ================= messages ================= */
+function handle(m) {
+  const now = performance.now();
+  switch (m.type) {
+    case 'config':
+      if (m.skin) Wz.skin = m.skin;
+      calmSetting = !!m.calm; calm = calmSetting || matchMedia('(prefers-reduced-motion: reduce)').matches; wake();
+      break;
+    case 'start': clearTimeout(gapT); want('hear', { prompt: m.prompt, src: m.source }); break;
+    case 'step': // the Language Model flows narrate with plain steps
+      clearTimeout(gapT);
+      if (m.text && /writing/i.test(m.text)) want('write', { text: m.text }); else want('research', { text: m.text, depth: m.depth });
+      break;
+    case 'research': clearTimeout(gapT); want('research', { text: m.text, depth: m.depth }); break;
+    case 'write': clearTimeout(gapT); want('write', { text: m.text }); break;
+    case 'post': // a tool finished; if nothing follows soon, he sits down to think it over
+      clearTimeout(gapT); lastEv = now;
+      gapT = setTimeout(() => { if (['research', 'write', 'hear', 'idle'].includes(goal.mode)) want('think'); }, 1800);
+      break;
+    case 'think': clearTimeout(gapT); want('think'); break;
+    case 'summon': {
+      if (FM.some(x => x.id === m.id) || WP.some(x => x.id === m.id)) break;
+      if (m.parent) { // one of the familiars (or one of its helpers) summoning a helper of its own
+        let par = m.parent === '*' ? FM.find(x => !x.ret && x.state === 'work') || FM.find(x => !x.ret && x.state !== 'gone' && x.state !== 'puff')
+          : FM.find(x => x.id === m.parent && x.state !== 'gone' && x.state !== 'puff') || WP.find(x => x.id === m.parent && x.state !== 'gone');
+        // '*' is the demo page's "any familiar"; with none out it summons one first
+        if (!par && m.parent === '*') { par = newFam('fam-' + Math.random().toString(36).slice(2), 'Rebuild the menu', m.sid); FM.push(par); famQ.push(par); nudge(); }
+        if (par) { WP.push(newWisp(m.id || Math.random().toString(36).slice(2), m.label, par, now)); lastEv = now; $('trip').textContent = tripLabel(); wake(); break; }
+      }
+      const fm = newFam(m.id || Math.random().toString(36).slice(2), m.label, m.sid);
+      FM.push(fm); famQ.push(fm); lastEv = now; nudge();
+      break;
+    }
+    case 'famWork': {
+      const fm = FM.find(x => x.id === m.id) || WP.find(x => x.id === m.id); lastEv = now;
+      if (fm && fm.state === 'work') { fm.pingT = now; if (!fm.book.turnT0 && fm.book.nextTurn - now > 300) fm.book.nextTurn = now + 120; if (!calm) for (let i = 0; i < 3; i++) spark(fm.x + rnd() * 8 - 4, fm.y - 4, rnd() * 16 - 8, -10 - rnd() * 14, 600, i ? fm.p.C : '#ffffff'); wake(); }
+      break;
+    }
+    case 'famReturn': {
+      const fm = m.id === '*' ? FM.find(x => !x.ret && x.state === 'work') : FM.find(x => x.id === m.id) || WP.find(x => x.id === m.id);
+      if (fm) { fm.ret = true; lastEv = now; wake(); }
+      break;
+    }
+    case 'waiting': want('waiting', { n: m.n }); break;
+    case 'wave': lastEv = now; Wz.waveUntil = now + 2800; speak(m.text || 'your turn!'); wake(); setTimeout(() => { if (performance.now() >= Wz.waveUntil - 50) quiet(); }, 2850); break;
+    case 'error': errQ = m.text || 'oof!'; lastEv = now; nudge(); break;
+    case 'deliver': want('deliver'); break;
+    case 'ask': lastEv = now; showAsk(m.text, m.id); break;
+    case 'answer': clearTimeout(gapT); want('present', m); break;
+    case 'home': clearTimeout(gapT); want('home'); break;
+    case 'doze': want('idle'); lastEv = now - 61000; quiet(); break;
+    case 'demo': runDemo(!!m.loop); break;
+    case 'demoStop': demoRun++; break;
+  }
+}
+window.addEventListener('message', ev => handle(ev.data || {}));
+
+$('allow').onclick = () => answerAsk(true);
+$('deny').onclick = () => answerAsk(false);
+function answerAsk(ok) { const id = ask.dataset.id; ask.dataset.id = ''; ask.hidden = true; quiet(); if (id) vscode.postMessage({ type: 'askResult', id, ok }); }
+$('ansx').onclick = () => { ans.hidden = true; };
+$('form').addEventListener('submit', e => {
+  e.preventDefault();
+  const t = $('q').value.trim(); if (!t) return;
+  vscode.postMessage({ type: 'prompt', text: t }); $('q').value = '';
+});
+
+layout(); setStep(-1);
+wake();
+vscode.postMessage({ type: 'ready' });
+})();
